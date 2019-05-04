@@ -7,7 +7,7 @@ References:
 
 #include <vector>
 #include <time.h>
-#include <opencv2\opencv.hpp>
+#include <opencv2/opencv.hpp>
 #include "Solver.h"
 
 bool buttonIsPressed = false;
@@ -155,13 +155,13 @@ void updateScribbleColor(int key)
 void mouseEvent(int event, int x, int y, int flags, void *userData)
 {
 
-    if(event == CV_EVENT_LBUTTONDOWN)
+    if(event == cv::EVENT_LBUTTONDOWN)
         buttonIsPressed = true;
 
-    if(event == CV_EVENT_LBUTTONUP)
+    if(event == cv::EVENT_LBUTTONUP)
         buttonIsPressed = false;
 
-    if(event == CV_EVENT_MOUSEMOVE && buttonIsPressed)
+    if(event == cv::EVENT_MOUSEMOVE && buttonIsPressed)
         paintImage(x, y, scribbleColor, scribbleRadius);
     
 }
@@ -169,7 +169,7 @@ void mouseEvent(int event, int x, int y, int flags, void *userData)
 int main(int argc, char **argv)
 {
 
-    if(argc != 2) {
+    if(argc == 1) {
         std::cout << "Usage: DepthDiffusion.exe ImageFile.Extension" << std::endl;
         return 0;
     }
@@ -193,15 +193,26 @@ int main(int argc, char **argv)
     cv::Mat artisticImage = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
     
     Solver *solver = new Solver(originalImage.rows, originalImage.cols);
-    solver->setBeta(0.33);
-    solver->setErrorThreshold(1e-6);
+    solver->setBeta(0.4);
+    solver->setErrorThreshold(1e-7);
     solver->setMaximumNumberOfIterations(10000);
     //solver->enableDebug();
     
     editedImage[0] = cv::imread(argv[1]);
+    if(argc == 3) {
+        scribbleImage[0] = cv::imread(argv[2], CV_LOAD_IMAGE_GRAYSCALE);
+        for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
+            if(scribbleImage[0].ptr<unsigned char>()[pixel] != 32) {
+                for(int ch = 0; ch < 3; ch++)
+                    editedImage[0].ptr<unsigned char>()[pixel * 3 + ch] = scribbleImage[0].ptr<unsigned char>()[pixel];
+                scribbleImage[0].ptr<unsigned char>()[pixel] = 255;
+            }
+        }
+    } 
+
     scribbleRadius = std::min(originalImage.rows, originalImage.cols) * 0.02;
     
-    cv::cvtColor(originalImage, grayImage[0], CV_BGR2GRAY);
+    cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
     for(int level = 1; level < pyrLevels; level++)
         cv::pyrDown(grayImage[level - 1], grayImage[level], cv::Size(grayImage[level].cols, grayImage[level].rows));
 
@@ -218,7 +229,7 @@ int main(int argc, char **argv)
         cv::imshow("Depth Image", depthImage[0]);
         cv::imshow("Artistic Image", artisticImage);
 
-        key = cvWaitKey(33);
+        key = cv::waitKey(33);
         updateScribbleColor(key);
         
         //if key == 'd' or key == 'D'
@@ -233,19 +244,19 @@ int main(int argc, char **argv)
 
                 solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(), grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
                 
-                if(level != 0) {
+                if(level > 0) {
                     cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
                     cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
                 }
-
+    
             }
             double end = cpuTime();
             std::cout << "CPU: " << (end - begin) * 1000 << " ms" << std::endl;
         
         }
 
-        //if key == 's' or key == 'S'
-        if(key == 83 || key == 115)
+        //if key == 'g' or key == 'G'
+        if(key == 71 || key == 103)
             desaturateImage(originalImage, grayImage[0], depthImage[0], artisticImage);
 
         //if key == 'h' or key == 'H'
@@ -256,6 +267,21 @@ int main(int argc, char **argv)
         if(key == 66 || key == 98)
             defocusImage(originalImage, depthImage[0], artisticImage);
     
+        //if key == 's' or key == 'S'
+        if(key == 83 || key == 115) {
+            cv::Mat imageToSave = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
+            for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
+                if(scribbleImage[0].ptr<unsigned char>()[pixel] != 255)
+                    for(int ch = 0; ch < 3; ch++)
+                        imageToSave.ptr<unsigned char>()[pixel * 3 + ch] = 32;
+                else
+                    for(int ch = 0; ch < 3; ch++)
+                        imageToSave.ptr<unsigned char>()[pixel * 3 + ch] = editedImage[0].ptr<unsigned char>()[pixel * 3 + ch];
+                    
+            }
+            cv::imwrite("Scribble.png", imageToSave);
+        }
+        
     }
 
     delete [] solver;

@@ -1,8 +1,8 @@
 #ifndef SOLVER_H
 #define SOLVER_H
 
-#include <opencv2\opencv.hpp>
-#include <Eigen\IterativeLinearSolvers>
+#include <opencv2/opencv.hpp>
+#include <Eigen/IterativeLinearSolvers>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>

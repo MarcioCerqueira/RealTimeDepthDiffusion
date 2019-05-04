@@ -149,7 +149,7 @@ void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleIm
                 if(image[pixel] == -1) debugImage.ptr<unsigned char>()[pixel] = 255;
                 else debugImage.ptr<unsigned char>()[pixel] = image[pixel];      
             }  
-            std::cout << "Iteration: " << iteration << ", Error: " << error << std::endl;
+            //std::cout << "Iteration: " << iteration << ", Error: " << error << std::endl;
             cv::imshow("Depth Image", debugImage);
             cv::waitKey(33);
         }
@@ -214,17 +214,15 @@ void Solver::runConjugateGradient(unsigned char *depthImage, unsigned char *scri
 
     A.setFromTriplets(tripletList.begin(), tripletList.end());
     
-    Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cg;
-    cg.compute(A.transpose()*A);
+    Eigen::BiCGSTAB<Eigen::SparseMatrix<double> > cg;
+    cg.compute(A);
     cg.setMaxIterations(maxIterations);
     cg.setTolerance(threshold);
-    x = cg.solveWithGuess(A.transpose() * b, x);
+    x = cg.solveWithGuess(b, x);
     std::cout << "#iterations:     " << cg.iterations() << std::endl;
     std::cout << "estimated error: " << cg.error()      << std::endl;
 
-    for(int pixel = 0; pixel < rows * cols; pixel++) {
-        if(x(pixel) < 0) depthImage[pixel] = 0;
-        else depthImage[pixel] = x(pixel);
-    }
+    for(int pixel = 0; pixel < rows * cols; pixel++)
+        depthImage[pixel] = x(pixel);
     
 }
