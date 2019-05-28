@@ -1,6 +1,18 @@
-To compile this project, you will need to have both OpenCV and Eigen libraries installed.
+To compile this project, you will need to have the following libraries:
+	
+	OpenCV - To load and process the images;
 
-I use the following command to compile the project: "g++ main.cpp Solver.cpp -O3 -march=native -fopenmp -IC:/Eigen/include -IC:/OpenCV/opencv/build/include -LC:/OpenCV/opencv/build/x86/mingw/bin -llibopencv_core231 -llibopencv_imgproc231 -llibopencv_highgui231 -o main.exe images/LowHorse.png images/AnnotatedLowHorse.png"
+	Eigen - To run the conjugate gradient solver (Solver->runConjugateGradient);
+
+	Trilinos - To run the algebraic multigrid solver (Solver->runAMG);
+
+The software accepts as arguments an image and optionally the corresponding annotated image
+
+Times measured over a 800 x 900 image on an i5:
+
+	CPU-Based Pyramidal Gauss-Seidel: 9 seconds
+	CPU-Based AMG Conjugate Gradient: 4 seconds
+	CPU-Based Pyramidal Conjugate Gradient: 2 seconds
 
 Menu:
 

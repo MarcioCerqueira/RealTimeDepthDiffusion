@@ -5,10 +5,9 @@ References:
     Depth Design - "Depth Annotations: Designing Depth of a Single Image for Depth-based Effects" by Liao et al. GI 2017
 */
 
-#include <vector>
-#include <time.h>
-#include <opencv2/opencv.hpp>
 #include "Solver.h"
+#include <vector>
+#include <opencv2/opencv.hpp>
 
 bool buttonIsPressed = false;
 int key = 0;
@@ -194,8 +193,8 @@ int main(int argc, char **argv)
     
     Solver *solver = new Solver(originalImage.rows, originalImage.cols);
     solver->setBeta(0.4);
-    solver->setErrorThreshold(1e-7);
-    solver->setMaximumNumberOfIterations(10000);
+    solver->setErrorThreshold(1e-4);
+    solver->setMaximumNumberOfIterations(1000);
     //solver->enableDebug();
     
     editedImage[0] = cv::imread(argv[1]);
@@ -220,7 +219,7 @@ int main(int argc, char **argv)
     cv::namedWindow("Edited Image");
     cv::namedWindow("Depth Image");
     cv::namedWindow("Artistic Image");
-    cv::setMouseCallback("Edited Image", mouseEvent, NULL);
+	cv::setMouseCallback("Edited Image", mouseEvent, NULL);
        
     while(key != 27) {
 
@@ -237,19 +236,30 @@ int main(int argc, char **argv)
             
             double begin = cpuTime();
             pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
-            for(int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
+            
+			for(int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
                 depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel*3+0];
 
-            for(int level = pyrLevels - 1; level >= 0; level--) {
+			for(int level = pyrLevels - 1; level >= 0; level--) {
 
-                solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(), grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-                
-                if(level > 0) {
-                    cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
-                    cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
-                }
-    
-            }
+				solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+					grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+				if(level > 0) {
+					cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
+					cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
+				}
+			
+			}
+			
+			/*
+            // For AMG
+            for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
+                depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel*3+0];
+            
+			solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(), 
+				depthImage[0].rows, depthImage[0].cols);
+			*/
+
             double end = cpuTime();
             std::cout << "CPU: " << (end - begin) * 1000 << " ms" << std::endl;
         
