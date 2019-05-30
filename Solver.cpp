@@ -345,6 +345,34 @@ void Solver::runAMG(unsigned char *depthImage, unsigned char *scribbleImage, uns
 
 }
 
+void Solver::runLAHBPCG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols)
+{
+	
+	Eigen::MatrixXd d = Eigen::MatrixXd(cols, rows);
+	Eigen::MatrixXd gx = Eigen::MatrixXd::Ones(cols, rows);
+	Eigen::MatrixXd gy = Eigen::MatrixXd::Ones(cols, rows);
+	Eigen::MatrixXd sx = Eigen::MatrixXd::Ones(cols, rows);
+	Eigen::MatrixXd sy = Eigen::MatrixXd::Ones(cols, rows);
+	Eigen::MatrixXd w = Eigen::MatrixXd::Ones(cols, rows);
+	for (int y = 0; y < rows; y++) {
+		for (int x = 0; x < cols; x++) {
+			int pixel = y * cols + x;
+			d(x, y) = depthImage[pixel];
+			w(x, y) = scribbleImage[pixel] / 255;
+		}
+	}
+
+	LAHBPCG solver;
+	Eigen::MatrixXd xV = solver.apply(d, gx, gy, w, sx, sy, maxIterations, threshold);
+	for (int y = 0; y < rows; y++) {
+		for (int x = 0; x < cols; x++) {
+			int pixel = y * cols + x;
+			depthImage[pixel] = xV(x, y);
+		}
+	}
+	
+}
+
 void Solver::computeWeights(float *weights, unsigned char *grayImage, int rows, int cols)
 {
 

@@ -19,6 +19,8 @@
 #include <BelosEpetraAdapter.hpp>
 #include <ml_epetra_preconditioner.h>
 
+#include "LAHBPCG.h"
+
 class Solver
 {
 
@@ -36,6 +38,7 @@ public:
     void runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
     void runConjugateGradient(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runAMG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
+	void runLAHBPCG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 
 private:
 

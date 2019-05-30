@@ -6,13 +6,13 @@ To compile this project, you will need to have the following libraries:
 
 	Trilinos - To run the algebraic multigrid solver (Solver->runAMG);
 
-The software accepts as arguments an image and optionally the corresponding annotated image
+The software accepts as arguments:
 
-Times measured over a 800 x 900 image on an i5:
+	-i: Input image
 
-	CPU-Based Pyramidal Gauss-Seidel: 9 seconds
-	CPU-Based AMG Conjugate Gradient: 4 seconds
-	CPU-Based Pyramidal Conjugate Gradient: 2 seconds
+	-a: Annnotated image
+
+	-m: Solver name - AMG, LAHBF and PYR (default) are the options
 
 Menu:
 

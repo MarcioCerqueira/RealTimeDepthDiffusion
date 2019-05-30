@@ -3,11 +3,14 @@ References:
     Haze Simulation - Equations (1, 2) of "Single Image Haze Removal using Dark Channel Prior" by He et al. CVPR 2009
     Diffusion Curves - "Diffusion Curves: A Vector Representation for Smooth-Shaded Images" by Orzan et al. ToG 2008
     Depth Design - "Depth Annotations: Designing Depth of a Single Image for Depth-based Effects" by Liao et al. GI 2017
+	Locally Adapted Hierarchical Basis Preconditioning by R. Szeliski ToG 2006
+		Source code was directly adapted from "https://github.com/s-gupta/rgbdutils/blob/master/imagestack/src/LAHBPCG.cpp"
 */
 
 #include "Solver.h"
 #include <vector>
 #include <opencv2/opencv.hpp>
+#include <unistd.h>
 
 bool buttonIsPressed = false;
 int key = 0;
@@ -165,15 +168,28 @@ void mouseEvent(int event, int x, int y, int flags, void *userData)
     
 }
 
-int main(int argc, char **argv)
+int main(int argc, const char *argv[])
 {
 
     if(argc == 1) {
-        std::cout << "Usage: DepthDiffusion.exe ImageFile.Extension" << std::endl;
+        std::cout << "Usage: DepthDiffusion -i ImageFile.Extension" << std::endl;
         return 0;
     }
 
-    cv::Mat originalImage = cv::imread(argv[1]);
+	//Read arguments
+	std::string inputFileName, annotatedFileName, solverName = "PYR";
+	for(int argument = 1; argument < argc - 1; argument++) {
+		if (!strcmp(argv[argument], "-i"))
+			inputFileName.assign(argv[argument + 1]);
+		else if (!strcmp(argv[argument], "-a"))
+			annotatedFileName.assign(argv[argument + 1]);
+		else if (!strcmp(argv[argument], "-m"))
+			solverName.assign(argv[argument + 1]);
+		else if (!strcmp(argv[argument], "-h"))
+			std::cout << "Usage:\n -i input image\n -a annotated image\n -m solver name: AMG, LAHBF or PYR (default)\n";
+	}
+
+    cv::Mat originalImage = cv::imread(inputFileName);
 
     int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 64, 1)) + 1;
     std::vector<cv::Mat> depthImage;
@@ -197,9 +213,9 @@ int main(int argc, char **argv)
     solver->setMaximumNumberOfIterations(1000);
     //solver->enableDebug();
     
-    editedImage[0] = cv::imread(argv[1]);
-    if(argc == 3) {
-        scribbleImage[0] = cv::imread(argv[2], CV_LOAD_IMAGE_GRAYSCALE);
+    editedImage[0] = cv::imread(inputFileName);
+    if(annotatedFileName.size() > 1) {
+        scribbleImage[0] = cv::imread(annotatedFileName, CV_LOAD_IMAGE_GRAYSCALE);
         for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
             if(scribbleImage[0].ptr<unsigned char>()[pixel] != 32) {
                 for(int ch = 0; ch < 3; ch++)
@@ -237,30 +253,43 @@ int main(int argc, char **argv)
             double begin = cpuTime();
             pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
             
-			for(int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
-                depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel*3+0];
+			if (solverName == "PYR") {
 
-			for(int level = pyrLevels - 1; level >= 0; level--) {
+				for (int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
+					depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel * 3 + 0];
 
-				solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-					grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-				if(level > 0) {
-					cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
-					cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
+				for (int level = pyrLevels - 1; level >= 0; level--) {
+
+					solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+						grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+					if (level > 0) {
+						cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
+						cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
+					}
+
+				}
+
+			} else {
+
+				for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
+					depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
+
+				if (solverName == "AMG") {
+
+					solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+						depthImage[0].rows, depthImage[0].cols);
+				
+				} else if (solverName == "LAHBF") {
+
+					//Currently, it does support edge-aware depth diffusion
+					solver->runLAHBPCG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+						depthImage[0].rows, depthImage[0].cols);
+
 				}
 			
 			}
 			
-			/*
-            // For AMG
-            for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
-                depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel*3+0];
-            
-			solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(), 
-				depthImage[0].rows, depthImage[0].cols);
-			*/
-
-            double end = cpuTime();
+			double end = cpuTime();
             std::cout << "CPU: " << (end - begin) * 1000 << " ms" << std::endl;
         
         }
