@@ -676,7 +676,7 @@ void LAHBPCG::solve(Eigen::MatrixXd& guess, int max_iter, float tol) {
 
 		vR = Eigen::Map<Eigen::VectorXd>(const_cast<double *>(r.data()), r.rows() * r.cols(), 1);
 		float resNorm = vR.dot(vR);
-		//printf("iteration %d, error %f\n", i, resNorm);
+		printf("iteration %d, error %f\n", i, resNorm);
 		if (resNorm < epsilon) {
 			break;
 		}
