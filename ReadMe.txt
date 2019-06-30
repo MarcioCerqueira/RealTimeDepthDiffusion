@@ -6,15 +6,23 @@ To compile this project, you will need to have the following libraries:
 
 	Trilinos - To run the algebraic multigrid solver (Solver->runAMG);
 
+	CUDA - To run the GPU solvers;
+
+	CUSP - To run GPU-based Jacobi, Gauss-Seidel and BiCGStab solvers;
+
+	Paralution - To run Paralution's BiCGStab solver;
+
+	ViennaCL - To run ViennaCL's BiCGStab solver;
+
 The software accepts as arguments:
 
 	-i: Input image
 
 	-a: Annnotated image
 
-	-m: Solver name - AMG, LAHBF and PYR (default) are the options
-
 Menu:
+
+	The solver trackbar enables runtime selection of a CPU-based or GPU-based solver
 
 	Press '0' to annotate the "Edited Image" with depth 0
 

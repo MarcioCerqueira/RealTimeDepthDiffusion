@@ -8,9 +8,9 @@ References:
 */
 
 #include "Solver.h"
+#include "GPUSolver.h"
 #include <vector>
 #include <opencv2/opencv.hpp>
-#include <unistd.h>
 
 bool buttonIsPressed = false;
 int key = 0;
@@ -18,6 +18,7 @@ int scribbleColor = 0;
 int scribbleRadius;
 std::vector<cv::Mat> editedImage;
 std::vector<cv::Mat> scribbleImage;
+std::string solverName = "Eigen-BiCGStab";
 
 double cpuTime(void)
 {
@@ -168,6 +169,51 @@ void mouseEvent(int event, int x, int y, int flags, void *userData)
     
 }
 
+void trackbarEvent(int code, void* )
+{
+
+	switch (code) {
+	case 0:
+		solverName = "CPU-Jacobi";
+		break;
+	case 1:
+		solverName = "CPU-GaussSeidel";
+		break;
+	case 2:
+		solverName = "Eigen-BiCGStab";
+		break;
+	case 3:
+		solverName = "Trilinos-AMG";
+		break;
+	case 4:
+		solverName = "LAHBF";
+		break;
+	case 5:
+		solverName = "GPU-Jacobi";
+		break;
+	case 6:
+		solverName = "GPU-GaussSeidel";
+		break;
+	case 7:
+		solverName = "CUSP-Jacobi";
+		break;
+	case 8:
+		solverName = "CUSP-GaussSeidel";
+		break;
+	case 9:
+		solverName = "CUSP-BiCGStab";
+		break;
+	case 10:
+		solverName = "Paralution-BiCGStab";
+		break;
+	case 11:
+		solverName = "ViennaCL-BiCGStab";
+		break;
+	}
+	std::cout << solverName << " has been selected as solver" << std::endl;
+
+}
+
 int main(int argc, const char *argv[])
 {
 
@@ -177,21 +223,21 @@ int main(int argc, const char *argv[])
     }
 
 	//Read arguments
-	std::string inputFileName, annotatedFileName, solverName = "PYR";
+	std::string inputFileName, annotatedFileName;
+	int solverCode = 2;
 	for(int argument = 1; argument < argc - 1; argument++) {
 		if (!strcmp(argv[argument], "-i"))
 			inputFileName.assign(argv[argument + 1]);
 		else if (!strcmp(argv[argument], "-a"))
 			annotatedFileName.assign(argv[argument + 1]);
-		else if (!strcmp(argv[argument], "-m"))
-			solverName.assign(argv[argument + 1]);
 		else if (!strcmp(argv[argument], "-h"))
-			std::cout << "Usage:\n -i input image\n -a annotated image\n -m solver name: AMG, LAHBF or PYR (default)\n";
+			std::cout << "Usage:\n -i input image\n -a annotated image\n";
 	}
 
+	//Initialize variables
     cv::Mat originalImage = cv::imread(inputFileName);
-
-    int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 64, 1)) + 1;
+	cv::Mat artisticImage = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
+	int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 64, 1)) + 1;
     std::vector<cv::Mat> depthImage;
     std::vector<cv::Mat> grayImage;
     editedImage.resize(pyrLevels);
@@ -205,13 +251,16 @@ int main(int argc, const char *argv[])
         depthImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
         grayImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
     }
-    cv::Mat artisticImage = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
     
+	float beta = 0.4;
+	float tolerance = 1e-4;
+	int maxIterations = 1000;
+	bool isDebugEnabled = false;
     Solver *solver = new Solver(originalImage.rows, originalImage.cols);
-    solver->setBeta(0.4);
-    solver->setErrorThreshold(1e-4);
-    solver->setMaximumNumberOfIterations(1000);
-    //solver->enableDebug();
+    solver->setBeta(beta);
+    solver->setErrorThreshold(tolerance);
+    solver->setMaximumNumberOfIterations(maxIterations);
+	if(isDebugEnabled) solver->enableDebug();
     
     editedImage[0] = cv::imread(inputFileName);
     if(annotatedFileName.size() > 1) {
@@ -226,7 +275,6 @@ int main(int argc, const char *argv[])
     } 
 
     scribbleRadius = std::min(originalImage.rows, originalImage.cols) * 0.02;
-    
     cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
     for(int level = 1; level < pyrLevels; level++)
         cv::pyrDown(grayImage[level - 1], grayImage[level], cv::Size(grayImage[level].cols, grayImage[level].rows));
@@ -236,7 +284,8 @@ int main(int argc, const char *argv[])
     cv::namedWindow("Depth Image");
     cv::namedWindow("Artistic Image");
 	cv::setMouseCallback("Edited Image", mouseEvent, NULL);
-       
+	cv::createTrackbar("Solver", "Edited Image", &solverCode, 11, trackbarEvent);
+
     while(key != 27) {
 
         cv::imshow("Original Image", originalImage);
@@ -247,67 +296,104 @@ int main(int argc, const char *argv[])
         key = cv::waitKey(33);
         updateScribbleColor(key);
         
-        //if key == 'd' or key == 'D'
-        if(key == 68 || key == 100) {
+		//Check menu
+		if (key == 'g' || key == 'G') {
+			std::cout << "Desaturating image..." << std::endl;
+			desaturateImage(originalImage, grayImage[0], depthImage[0], artisticImage);
+		}
+		if (key == 'h' || key == 'H') {
+			std::cout << "Hazing image..." << std::endl;
+			hazeImage(originalImage, depthImage[0], artisticImage);
+		}
+		if (key == 'b' || key == 'B') {
+			std::cout << "Defocusing image..." << std::endl;
+			defocusImage(originalImage, depthImage[0], artisticImage);
+		}
+		
+        if(key == 'd' || key == 'D') {
             
             double begin = cpuTime();
-            pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
             
-			if (solverName == "PYR") {
-
-				for (int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
-					depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel * 3 + 0];
-
-				for (int level = pyrLevels - 1; level >= 0; level--) {
-
-					solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-						grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-					if (level > 0) {
-						cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
-						cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
-					}
-
-				}
-
-			} else {
+			if (solverName == "Trilinos-AMG") {
 
 				for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
 					depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
 
-				if (solverName == "AMG") {
+				solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+					depthImage[0].rows, depthImage[0].cols);
 
-					solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
-						depthImage[0].rows, depthImage[0].cols);
+			} else if (solverName == "LAHBF") {
+
+				for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
+					depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
+
+				//Currently, LAHBF does support edge-aware depth diffusion
+				solver->runLAHBPCG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+					depthImage[0].rows, depthImage[0].cols);
+
+			} else {
+
+				pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
+
+				for (int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
+					depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel * 3 + 0];
 				
-				} else if (solverName == "LAHBF") {
+				for (int level = pyrLevels - 1; level >= 0; level--) {
 
-					//Currently, it does support edge-aware depth diffusion
-					solver->runLAHBPCG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
-						depthImage[0].rows, depthImage[0].cols);
+					if (solverName == "CPU-Jacobi")
+						solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+					else if(solverName == "CPU-GaussSeidel")
+						solver->runGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+					else if(solverName == "Eigen-BiCGStab")
+						solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+					else if(solverName == "GPU-Jacobi")
+						GPUJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if(solverName == "GPU-GaussSeidel")
+						GPUGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if(solverName == "CUSP-Jacobi")
+						CUSPJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if (solverName == "CUSP-GaussSeidel")
+						CUSPGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if(solverName == "CUSP-BiCGStab")
+						CUSPPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if(solverName == "Paralution-BiCGStab")
+						ParalutionPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance);
+					else if(solverName == "ViennaCL-BiCGStab")
+						ViennaCLPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+							tolerance); 
 
+					if (level > 0) {
+						cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
+						cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
+					}
+					
 				}
-			
+
 			}
 			
 			double end = cpuTime();
-            std::cout << "CPU: " << (end - begin) * 1000 << " ms" << std::endl;
+            std::cout << "Processing Time: " << (end - begin) * 1000 << " ms" << std::endl;
         
         }
 
-        //if key == 'g' or key == 'G'
-        if(key == 71 || key == 103)
-            desaturateImage(originalImage, grayImage[0], depthImage[0], artisticImage);
+		if(key == 's' || key == 'S') {
 
-        //if key == 'h' or key == 'H'
-        if(key == 72 || key == 104)
-            hazeImage(originalImage, depthImage[0], artisticImage);
-
-        //if key == 'b' or key == 'B'
-        if(key == 66 || key == 98)
-            defocusImage(originalImage, depthImage[0], artisticImage);
-    
-        //if key == 's' or key == 'S'
-        if(key == 83 || key == 115) {
             cv::Mat imageToSave = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
             for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
                 if(scribbleImage[0].ptr<unsigned char>()[pixel] != 255)
@@ -316,14 +402,14 @@ int main(int argc, const char *argv[])
                 else
                     for(int ch = 0; ch < 3; ch++)
                         imageToSave.ptr<unsigned char>()[pixel * 3 + ch] = editedImage[0].ptr<unsigned char>()[pixel * 3 + ch];
-                    
             }
             cv::imwrite("Scribble.png", imageToSave);
-        }
+        
+		}
         
     }
 
-    delete [] solver;
+    delete solver;
     return 0;
 
 }

@@ -39,7 +39,7 @@ public:
     void runConjugateGradient(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runAMG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runLAHBPCG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
-
+	
 private:
 
     void computeWeights(float *weights, unsigned char *grayImage, int rows, int cols);

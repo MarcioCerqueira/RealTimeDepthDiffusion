@@ -19,6 +19,8 @@ Solver::~Solver()
 void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols)
 {
 
+	float error = 0;
+	int iteration;
     float *tempImage = (float*)malloc(sizeof(float) * rows * cols);
     float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
     int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
@@ -30,10 +32,9 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
         tempImage[pixel] = image[pixel];
     }
     
-    for(int iteration = 0; iteration < maxIterations; iteration++) {
+	for(iteration = 0; iteration < maxIterations; iteration++) {
 
-        float error = 0;
-        
+		error = 0;
         for(int y = 0; y < rows; y++) {
             for(int x = 0; x < cols; x++) {
 
@@ -62,22 +63,12 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
 
         error /= (rows * cols);
         if(error < threshold) break;
-        
-        if(iteration % 10 == 0 && isDebugEnabled) {
-            for(int pixel = 0; pixel < rows * cols; pixel++) {
-                if(image[pixel] == -1) debugImage.ptr<unsigned char>()[pixel] = 255;
-                else debugImage.ptr<unsigned char>()[pixel] = image[pixel];      
-            }  
-            std::cout << "Iteration: " << iteration << ", Error: " << error << std::endl;
-            cv::imshow("Depth Image", debugImage);
-            cv::waitKey(33);
-        }
-        
+    
     }
 
+	if (isDebugEnabled) std::cout << "Iterations: " << iteration - 1 << " | Error: " << error << std::endl;
     for(int pixel = 0; pixel < rows * cols; pixel++)
         depthImage[pixel] = image[pixel];
-
 
     delete [] tempImage;
     delete [] weights;
@@ -92,12 +83,13 @@ void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleIm
         image[pixel] = depthImage[pixel];
     
     float error = 0;
-    float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
+	int iteration;
+	float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
     int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
     computeWeights(weights, grayImage, rows, cols);
     computePositions(positions, rows, cols);
-
-    for(int iteration = 0; iteration < maxIterations; iteration++) {
+	
+	for(iteration = 0; iteration < maxIterations; iteration++) {
 
         error = 0;  
         
@@ -126,20 +118,9 @@ void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleIm
         
         error /= (rows * cols);
         if(error < threshold) break;
-        
-        if(iteration % 10 == 0 && isDebugEnabled) {
-            for(int pixel = 0; pixel < rows * cols; pixel++) {
-                if(image[pixel] == -1) debugImage.ptr<unsigned char>()[pixel] = 255;
-                else debugImage.ptr<unsigned char>()[pixel] = image[pixel];      
-            }  
-            //std::cout << "Iteration: " << iteration << ", Error: " << error << std::endl;
-            cv::imshow("Depth Image", debugImage);
-            cv::waitKey(33);
-        }
-        
     }
 
-    std::cout << error << std::endl;
+	if(isDebugEnabled) std::cout << "Iterations: " << iteration - 1 << " | Error: " << error << std::endl;
     for(int pixel = 0; pixel < rows * cols; pixel++)
         depthImage[pixel] = image[pixel];
 
@@ -201,17 +182,17 @@ void Solver::runConjugateGradient(unsigned char *depthImage, unsigned char *scri
 	
 	
     A.setFromTriplets(tripletList.begin(), tripletList.end());
-	Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cg;
+	Eigen::BiCGSTAB<Eigen::SparseMatrix<double>, Eigen::IncompleteLUT<double>> cg;
+	cg.preconditioner().setDroptol(1e-03);
+	//Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cg;
 	cg.compute(A);
 	cg.setMaxIterations(maxIterations);
     cg.setTolerance(threshold);
 	x = cg.solveWithGuess(b, x);
-	std::cout << "#iterations:     " << cg.iterations() << std::endl;
-    std::cout << "estimated error: " << cg.error()      << std::endl;
+	if(isDebugEnabled) std::cout << "Iterations: " << cg.iterations() << " | Error: " << cg.error() << std::endl;
 	
-	for (int pixel = 0; pixel < rows * cols; pixel++) {
+	for (int pixel = 0; pixel < rows * cols; pixel++)
 		depthImage[pixel] = x(pixel);
-	}
     
 }
 
@@ -330,15 +311,14 @@ void Solver::runAMG(unsigned char *depthImage, unsigned char *scribbleImage, uns
 	AztecOO solver(problem);
 
 	ML_Epetra::MultiLevelPreconditioner MLPrec(A, true);
-
+	
 	solver.SetPrecOperator(&MLPrec);
 	solver.SetAztecOption(AZ_solver, AZ_bicgstab);
 	solver.SetAztecOption(AZ_precond, AZ_Jacobi);
 	solver.SetAztecOption(AZ_diagnostics, AZ_none);
 	solver.SetAztecOption(AZ_output, AZ_none);
 	solver.Iterate(maxIterations, threshold);
-	std::cout << "#iterations:     " << solver.NumIters() << std::endl;
-	std::cout << "estimated error: " << solver.TrueResidual() << std::endl;
+	if(isDebugEnabled) std::cout << "Iterations: " << solver.NumIters() << " | Error: " << solver.TrueResidual() << std::endl;
 
 	for (int pixel = 0; pixel < rows * cols; pixel++)
 		depthImage[pixel] = x[pixel];
