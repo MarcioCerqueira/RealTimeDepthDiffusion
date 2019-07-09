@@ -16,20 +16,28 @@ Solver::~Solver()
     delete [] image;
 }
 
-void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols)
+void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, 
+	bool chebyshevVariant)
 {
 
 	float error = 0;
 	int iteration;
-    float *tempImage = (float*)malloc(sizeof(float) * rows * cols);
-    float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
+	float *previousImage = (float*)malloc(sizeof(float) * rows * cols);
+	float *nextImage = (float*)malloc(sizeof(float) * rows * cols);
+	float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
     int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
-    computeWeights(weights, grayImage, rows, cols);
+    //For Chebyshev's variant
+	int S = 10;
+	float omega;
+	float rho = 0.99;
+	float gamma = 0.99;
+	computeWeights(weights, grayImage, rows, cols);
     computePositions(positions, rows, cols);
 
     for(int pixel = 0; pixel < rows * cols; pixel++) {
-        image[pixel] = depthImage[pixel];
-        tempImage[pixel] = image[pixel];
+		previousImage[pixel] = 0;
+		image[pixel] = depthImage[pixel];
+		nextImage[pixel] = depthImage[pixel];
     }
     
 	for(iteration = 0; iteration < maxIterations; iteration++) {
@@ -52,25 +60,43 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
 
                 if(count > 0) {
                     error += fabs(sum/count - image[pixel]);
-                    tempImage[pixel] = sum/count;
+                    nextImage[pixel] = sum/count;
                 }
                 
             }
         }
         
-        for(int pixel = 0; pixel < rows * cols; pixel++)
-            image[pixel] = tempImage[pixel];
+		if (chebyshevVariant) {
+			
+			if (iteration < S) omega = 1;
+			else if (iteration == S) omega = 2.0 / (2.0 - rho * rho);
+			else omega = 4.0 / (4.0 - rho * rho * omega);
+
+			for (int pixel = 0; pixel < rows * cols; pixel++) {
+				if (scribbleImage[pixel] != 255)
+					nextImage[pixel] = (omega * (gamma * (nextImage[pixel] - image[pixel]) + image[pixel] - previousImage[pixel])) + previousImage[pixel];
+				previousImage[pixel] = image[pixel];
+				image[pixel] = nextImage[pixel];
+			}
+
+		} else {
+		
+			for (int pixel = 0; pixel < rows * cols; pixel++)
+				image[pixel] = nextImage[pixel];
+		
+		}
 
         error /= (rows * cols);
         if(error < threshold) break;
     
     }
 
-	if (isDebugEnabled) std::cout << "Iterations: " << iteration - 1 << " | Error: " << error << std::endl;
+	if (isDebugEnabled) std::cout << "Iterations: " << iteration << " | Error: " << error << std::endl;
     for(int pixel = 0; pixel < rows * cols; pixel++)
         depthImage[pixel] = image[pixel];
 
-    delete [] tempImage;
+	delete [] previousImage;
+    delete [] nextImage;
     delete [] weights;
     delete [] positions;
 
@@ -79,20 +105,21 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
 void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols)
 {
     
-    for(int pixel = 0; pixel < rows * cols; pixel++)
-        image[pixel] = depthImage[pixel];
-    
     float error = 0;
+	float omega = 1.9;
 	int iteration;
 	float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
     int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
-    computeWeights(weights, grayImage, rows, cols);
+	computeWeights(weights, grayImage, rows, cols);
     computePositions(positions, rows, cols);
 	
+	for (int pixel = 0; pixel < rows * cols; pixel++)
+		image[pixel] = depthImage[pixel];
+
 	for(iteration = 0; iteration < maxIterations; iteration++) {
 
         error = 0;  
-        
+
         for(int y = 0; y < rows; y++) {
             for(int x = 0; x < cols; x++) {
 
@@ -109,8 +136,11 @@ void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleIm
                 }
 
                 if(count > 0) {
+
                     error += fabs(sum/count - image[pixel]);
-                    image[pixel] = sum/count;
+					//Successive Over-Relaxation (SOR)
+                    image[pixel] = omega * (sum / count - image[pixel]) + image[pixel];
+					
                 }
                 
             }
@@ -118,9 +148,10 @@ void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleIm
         
         error /= (rows * cols);
         if(error < threshold) break;
-    }
+    
+	}
 
-	if(isDebugEnabled) std::cout << "Iterations: " << iteration - 1 << " | Error: " << error << std::endl;
+	if(isDebugEnabled) std::cout << "Iterations: " << iteration << " | Error: " << error << std::endl;
     for(int pixel = 0; pixel < rows * cols; pixel++)
         depthImage[pixel] = image[pixel];
 

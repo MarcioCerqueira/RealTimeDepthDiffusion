@@ -34,7 +34,7 @@ public:
     void setMaximumNumberOfIterations(int maxIterations) { this->maxIterations = maxIterations; }
     void enableDebug() { this->isDebugEnabled = true; }
 
-    void runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
+    void runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, bool chebyshevVariant);
     void runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
     void runConjugateGradient(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runAMG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);

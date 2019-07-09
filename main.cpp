@@ -1,16 +1,35 @@
 /*
 References:
-    Haze Simulation - Equations (1, 2) of "Single Image Haze Removal using Dark Channel Prior" by He et al. CVPR 2009
-    Diffusion Curves - "Diffusion Curves: A Vector Representation for Smooth-Shaded Images" by Orzan et al. ToG 2008
-    Depth Design - "Depth Annotations: Designing Depth of a Single Image for Depth-based Effects" by Liao et al. GI 2017
 	Locally Adapted Hierarchical Basis Preconditioning by R. Szeliski ToG 2006
 		Source code was directly adapted from "https://github.com/s-gupta/rgbdutils/blob/master/imagestack/src/LAHBPCG.cpp"
+	Diffusion Curves - "Diffusion Curves: A Vector Representation for Smooth-Shaded Images" by Orzan et al. ToG 2008
+	Haze Simulation - Equations (1, 2) of "Single Image Haze Removal using Dark Channel Prior" by He et al. CVPR 2009
+    Chebyshev Semi-Iterative Method - "A Chebyshev Semi-Iterative Approach for Accelerating Projective and PBD" by H. Wang ToG 2015 
+    Depth Design - "Depth Annotations: Designing Depth of a Single Image for Depth-based Effects" by Liao et al. GI 2017
+	GPU-based Red-Black Gauss-Seidel - "Fast Quadrangular Mass-Spring Systems using Red-Black Ordering" by Pall et al. VRIPHYS 2018
+*/
+
+/*
+	Titan X - 
+		CPU Jacobi - 4.2 s
+		CPU Gauss-Seidel - 5.9 s
+		Eigen BiCGStab - 1.7 s
+		Trilinos AMG - 2.3 s
+		LAHBF - 1.3 s
+		GPU Jacobi - 260 ms
+		GPU Gauss-Seidel - 470 ms
+		CUSP Jacobi - 3 s
+		CUSP Gauss-Seidel - 1.7 s
+		CUSP BiCGStab - 1.2 s
+		Paralution BiCGStab - 750 ms
+		ViennaCL BiCGStab - 4.5 s
 */
 
 #include "Solver.h"
 #include "GPUSolver.h"
 #include <vector>
 #include <opencv2/opencv.hpp>
+#include <opencv2/gpu/gpu.hpp>
 
 bool buttonIsPressed = false;
 int key = 0;
@@ -177,36 +196,42 @@ void trackbarEvent(int code, void* )
 		solverName = "CPU-Jacobi";
 		break;
 	case 1:
-		solverName = "CPU-GaussSeidel";
+		solverName = "CPU-Jacobi-Chebyshev";
 		break;
 	case 2:
-		solverName = "Eigen-BiCGStab";
+		solverName = "CPU-GaussSeidel";
 		break;
 	case 3:
-		solverName = "Trilinos-AMG";
+		solverName = "Eigen-BiCGStab";
 		break;
 	case 4:
-		solverName = "LAHBF";
+		solverName = "Trilinos-AMG";
 		break;
 	case 5:
-		solverName = "GPU-Jacobi";
+		solverName = "LAHBF";
 		break;
 	case 6:
-		solverName = "GPU-GaussSeidel";
+		solverName = "GPU-Jacobi";
 		break;
 	case 7:
-		solverName = "CUSP-Jacobi";
+		solverName = "GPU-Jacobi-Chebyshev";
 		break;
 	case 8:
-		solverName = "CUSP-GaussSeidel";
+		solverName = "GPU-GaussSeidel";
 		break;
 	case 9:
-		solverName = "CUSP-BiCGStab";
+		solverName = "CUSP-Jacobi";
 		break;
 	case 10:
-		solverName = "Paralution-BiCGStab";
+		solverName = "CUSP-GaussSeidel";
 		break;
 	case 11:
+		solverName = "CUSP-BiCGStab";
+		break;
+	case 12:
+		solverName = "Paralution-BiCGStab";
+		break;
+	case 13:
 		solverName = "ViennaCL-BiCGStab";
 		break;
 	}
@@ -224,7 +249,7 @@ int main(int argc, const char *argv[])
 
 	//Read arguments
 	std::string inputFileName, annotatedFileName;
-	int solverCode = 2;
+	int solverCode = 3;
 	for(int argument = 1; argument < argc - 1; argument++) {
 		if (!strcmp(argv[argument], "-i"))
 			inputFileName.assign(argv[argument + 1]);
@@ -234,7 +259,7 @@ int main(int argc, const char *argv[])
 			std::cout << "Usage:\n -i input image\n -a annotated image\n";
 	}
 
-	//Initialize variables
+	//Initialize host variables
     cv::Mat originalImage = cv::imread(inputFileName);
 	cv::Mat artisticImage = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
 	int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 64, 1)) + 1;
@@ -251,12 +276,36 @@ int main(int argc, const char *argv[])
         depthImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
         grayImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
     }
-    
+
+	//Initialize device variables
+	cv::Mat floatDepthImage = cv::Mat(cv::Size(originalImage.cols, originalImage.rows), CV_32FC1);
+	cv::gpu::GpuMat deviceOriginalImage = cv::gpu::GpuMat(originalImage);
+	std::vector<cv::gpu::GpuMat> deviceGrayImage;
+	std::vector<cv::gpu::GpuMat> deviceEditedImage;
+	std::vector<cv::gpu::GpuMat> deviceScribbleImage;
+	std::vector<cv::gpu::GpuMat> deviceDepthImage;
+	deviceEditedImage.resize(pyrLevels);
+	deviceScribbleImage.resize(pyrLevels);
+	deviceDepthImage.resize(pyrLevels);
+	deviceGrayImage.resize(pyrLevels);
+	for (int level = 0; level < pyrLevels; level++) {
+		cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
+		deviceEditedImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC3); 
+		deviceEditedImage[level].setTo(cv::Scalar(0));
+		deviceScribbleImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC1);
+		deviceScribbleImage[level].setTo(cv::Scalar(0));
+		deviceGrayImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC1);
+		deviceDepthImage[level] = cv::gpu::GpuMat(pyrSize, CV_32FC1);
+	}
+	GPUAllocateDeviceMemory(originalImage.rows, originalImage.cols, pyrLevels);
+   
+	//Initialize solver
 	float beta = 0.4;
 	float tolerance = 1e-4;
 	int maxIterations = 1000;
-	bool isDebugEnabled = false;
-    Solver *solver = new Solver(originalImage.rows, originalImage.cols);
+	bool isDebugEnabled = true;
+	scribbleRadius = std::min(originalImage.rows, originalImage.cols) * 0.02;
+	Solver *solver = new Solver(originalImage.rows, originalImage.cols);
     solver->setBeta(beta);
     solver->setErrorThreshold(tolerance);
     solver->setMaximumNumberOfIterations(maxIterations);
@@ -264,7 +313,7 @@ int main(int argc, const char *argv[])
     
     editedImage[0] = cv::imread(inputFileName);
     if(annotatedFileName.size() > 1) {
-        scribbleImage[0] = cv::imread(annotatedFileName, CV_LOAD_IMAGE_GRAYSCALE);
+        scribbleImage[0] = cv::imread(annotatedFileName, 0);
         for(int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
             if(scribbleImage[0].ptr<unsigned char>()[pixel] != 32) {
                 for(int ch = 0; ch < 3; ch++)
@@ -273,18 +322,13 @@ int main(int argc, const char *argv[])
             }
         }
     } 
-
-    scribbleRadius = std::min(originalImage.rows, originalImage.cols) * 0.02;
-    cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
-    for(int level = 1; level < pyrLevels; level++)
-        cv::pyrDown(grayImage[level - 1], grayImage[level], cv::Size(grayImage[level].cols, grayImage[level].rows));
-
+    
     cv::namedWindow("Original Image");
     cv::namedWindow("Edited Image");
     cv::namedWindow("Depth Image");
     cv::namedWindow("Artistic Image");
 	cv::setMouseCallback("Edited Image", mouseEvent, NULL);
-	cv::createTrackbar("Solver", "Edited Image", &solverCode, 11, trackbarEvent);
+	cv::createTrackbar("Solver", "Edited Image", &solverCode, 13, trackbarEvent);
 
     while(key != 27) {
 
@@ -314,75 +358,133 @@ int main(int argc, const char *argv[])
             
             double begin = cpuTime();
             
-			if (solverName == "Trilinos-AMG") {
-
-				for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
-					depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
-
-				solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
-					depthImage[0].rows, depthImage[0].cols);
-
-			} else if (solverName == "LAHBF") {
-
-				for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
-					depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
-
-				//Currently, LAHBF does support edge-aware depth diffusion
-				solver->runLAHBPCG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
-					depthImage[0].rows, depthImage[0].cols);
-
-			} else {
-
-				pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
-
-				for (int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
-					depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel * 3 + 0];
+			if (solverName.find("GPU") != std::string::npos) {
+			
+				cv::gpu::cvtColor(deviceOriginalImage, deviceGrayImage[0], cv::COLOR_BGR2GRAY);
+				deviceScribbleImage[0].upload(scribbleImage[0]);
+				deviceEditedImage[0].upload(editedImage[0]);
+				for (int level = 1; level < pyrLevels; level++) {
+					if(((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
+						cv::gpu::pyrDown(deviceGrayImage[level - 1], deviceGrayImage[level]);
+					else {
+						deviceGrayImage[level - 1].download(grayImage[level - 1]);
+						cv::pyrDown(grayImage[level - 1], grayImage[level]);
+						deviceGrayImage[level].upload(grayImage[level]);
+					}
+					GPUPyrDownAnnotation(deviceScribbleImage[level - 1].ptr(), deviceScribbleImage[level - 1].step,
+						deviceEditedImage[level - 1].ptr(), deviceEditedImage[level - 1].step, deviceEditedImage[level - 1].rows,
+						deviceEditedImage[level - 1].cols, deviceScribbleImage[level].ptr(), deviceScribbleImage[level].step,
+						deviceEditedImage[level].ptr(), deviceEditedImage[level].step, deviceEditedImage[level].rows,
+						deviceEditedImage[level].cols);
+				}
+				
+				GPUConvertToFloat(deviceEditedImage[pyrLevels - 1].ptr(), deviceEditedImage[pyrLevels - 1].step,
+					deviceDepthImage[pyrLevels - 1].ptr<float>(), deviceDepthImage[pyrLevels - 1].step, deviceEditedImage[pyrLevels - 1].rows,
+					deviceEditedImage[pyrLevels - 1].cols);
 				
 				for (int level = pyrLevels - 1; level >= 0; level--) {
 
-					if (solverName == "CPU-Jacobi")
-						solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-					else if(solverName == "CPU-GaussSeidel")
-						solver->runGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-					else if(solverName == "Eigen-BiCGStab")
-						solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-					else if(solverName == "GPU-Jacobi")
-						GPUJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if(solverName == "GPU-GaussSeidel")
-						GPUGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if(solverName == "CUSP-Jacobi")
-						CUSPJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if (solverName == "CUSP-GaussSeidel")
-						CUSPGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if(solverName == "CUSP-BiCGStab")
-						CUSPPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if(solverName == "Paralution-BiCGStab")
-						ParalutionPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance);
-					else if(solverName == "ViennaCL-BiCGStab")
-						ViennaCLPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-							grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-							tolerance); 
-
-					if (level > 0) {
-						cv::Size pyrSize = cv::Size(depthImage[level - 1].cols, depthImage[level - 1].rows);
-						cv::pyrUp(depthImage[level], depthImage[level - 1], pyrSize);
-					}
+					if (solverName == "GPU-Jacobi")
+						GPUJacobi(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(), 
+							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
+							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, false, level);
+					else if (solverName == "GPU-Jacobi-Chebyshev")
+						GPUJacobi(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
+							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
+							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, true, level);
+					else if (solverName == "GPU-GaussSeidel")
+						GPUGaussSeidel(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
+							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
+							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, level);
 					
+					if (level > 0) {
+						
+						if(deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols)
+							cv::gpu::pyrUp(deviceDepthImage[level], deviceDepthImage[level - 1]);
+						else {
+							deviceDepthImage[level].download(floatDepthImage);
+							cv::pyrUp(floatDepthImage, floatDepthImage, depthImage[level - 1].size());
+							deviceDepthImage[level - 1].upload(floatDepthImage);
+						}
+						
+					}
+
+				}
+
+				deviceDepthImage[0].download(floatDepthImage);
+				for (int pixel = 0; pixel < originalImage.rows * originalImage.cols; pixel++)
+					depthImage[0].ptr<unsigned char>()[pixel] = (unsigned char)floatDepthImage.ptr<float>()[pixel];
+
+			} else {
+
+				cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
+				for (int level = 1; level < pyrLevels; level++) cv::pyrDown(grayImage[level - 1], grayImage[level]);
+
+				if (solverName == "Trilinos-AMG") {
+
+					for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
+						depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
+
+					solver->runAMG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+						depthImage[0].rows, depthImage[0].cols);
+
+				}
+				else if (solverName == "LAHBF") {
+
+					for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++)
+						depthImage[0].ptr<unsigned char>()[pixel] = editedImage[0].ptr<unsigned char>()[pixel * 3 + 0];
+
+					//Currently, LAHBF does support edge-aware depth diffusion
+					solver->runLAHBPCG(depthImage[0].ptr<unsigned char>(), scribbleImage[0].ptr<unsigned char>(), grayImage[0].ptr<unsigned char>(),
+						depthImage[0].rows, depthImage[0].cols);
+
+				}
+				else {
+
+					pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
+
+					for (int pixel = 0; pixel < editedImage[pyrLevels - 1].rows * editedImage[pyrLevels - 1].cols; pixel++)
+						depthImage[pyrLevels - 1].ptr<unsigned char>()[pixel] = editedImage[pyrLevels - 1].ptr<unsigned char>()[pixel * 3 + 0];
+
+					for (int level = pyrLevels - 1; level >= 0; level--) {
+
+						if (solverName == "CPU-Jacobi")
+							solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, false);
+						else if (solverName == "CPU-Jacobi-Chebyshev")
+							solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, true);
+						else if (solverName == "CPU-GaussSeidel")
+							solver->runGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+						else if (solverName == "Eigen-BiCGStab")
+							solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+						else if (solverName == "CUSP-Jacobi")
+							CUSPJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+								tolerance, isDebugEnabled);
+						else if (solverName == "CUSP-GaussSeidel")
+							CUSPGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+								tolerance, isDebugEnabled);
+						else if (solverName == "CUSP-BiCGStab")
+							CUSPPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+								tolerance, isDebugEnabled);
+						else if (solverName == "Paralution-BiCGStab")
+							ParalutionPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+								tolerance);
+						else if (solverName == "ViennaCL-BiCGStab")
+							ViennaCLPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
+								tolerance);
+
+						if (level > 0) cv::pyrUp(depthImage[level], depthImage[level - 1], depthImage[level - 1].size());
+						
+					}
+
 				}
 
 			}
@@ -410,6 +512,7 @@ int main(int argc, const char *argv[])
     }
 
     delete solver;
+	GPUFreeDeviceMemory(pyrLevels);
     return 0;
 
 }

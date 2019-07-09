@@ -1,6 +1,6 @@
 To compile this project, you will need to have the following libraries:
 	
-	OpenCV - To load and process the images;
+	OpenCV (with GPU support) - To load and process the images;
 
 	Eigen - To run the conjugate gradient solver (Solver->runConjugateGradient);
 
@@ -8,11 +8,13 @@ To compile this project, you will need to have the following libraries:
 
 	CUDA - To run the GPU solvers;
 
-	CUSP - To run GPU-based Jacobi, Gauss-Seidel and BiCGStab solvers;
+	(Optional) CUSP - To run GPU-based Jacobi, Gauss-Seidel and BiCGStab solvers;
 
-	Paralution - To run Paralution's BiCGStab solver;
+	(Optional) Paralution - To run Paralution's BiCGStab solver;
 
-	ViennaCL - To run ViennaCL's BiCGStab solver;
+	(Optional) ViennaCL - To run ViennaCL's BiCGStab solver;
+
+To disable the optional libraries from compilation, comment the "#define" lines in GPUSolver.cu
 
 The software accepts as arguments:
 
