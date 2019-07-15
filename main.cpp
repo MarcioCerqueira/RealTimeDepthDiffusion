@@ -12,17 +12,19 @@ References:
 /*
 	Titan X - 
 		CPU Jacobi - 4.2 s
-		CPU Gauss-Seidel - 5.9 s
+		CPU Jacobi-Chebyshev - 5.3 s
+		CPU Gauss-Seidel - 7.2 s
 		Eigen BiCGStab - 1.7 s
-		Trilinos AMG - 2.3 s
-		LAHBF - 1.3 s
-		GPU Jacobi - 260 ms
-		GPU Gauss-Seidel - 470 ms
-		CUSP Jacobi - 3 s
-		CUSP Gauss-Seidel - 1.7 s
-		CUSP BiCGStab - 1.2 s
-		Paralution BiCGStab - 750 ms
-		ViennaCL BiCGStab - 4.5 s
+		Trilinos AMG - 2.5 s
+		LAHBF - 1.4 s
+		GPU Jacobi - 160 ms
+		GPU Jacobi-Chebyshev - 170 ms
+		GPU Gauss-Seidel - 200 ms
+		CUSP Jacobi - 1.7 s
+		CUSP Gauss-Seidel - 1.0 s
+		CUSP BiCGStab - 0.6 s
+		Paralution BiCGStab - 0.8 s
+		ViennaCL BiCGStab - 0.7 s
 */
 
 #include "Solver.h"
@@ -298,7 +300,7 @@ int main(int argc, const char *argv[])
 		deviceDepthImage[level] = cv::gpu::GpuMat(pyrSize, CV_32FC1);
 	}
 	GPUAllocateDeviceMemory(originalImage.rows, originalImage.cols, pyrLevels);
-   
+	
 	//Initialize solver
 	float beta = 0.4;
 	float tolerance = 1e-4;
@@ -310,7 +312,8 @@ int main(int argc, const char *argv[])
     solver->setErrorThreshold(tolerance);
     solver->setMaximumNumberOfIterations(maxIterations);
 	if(isDebugEnabled) solver->enableDebug();
-    
+	GPULoadWeights(beta);
+
     editedImage[0] = cv::imread(inputFileName);
     if(annotatedFileName.size() > 1) {
         scribbleImage[0] = cv::imread(annotatedFileName, 0);

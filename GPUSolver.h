@@ -3,6 +3,7 @@
 
 void GPUAllocateDeviceMemory(int rows, int cols, int levels);
 void GPUFreeDeviceMemory(int levels);
+void GPULoadWeights(float beta);
 void GPUConvertToFloat(unsigned char *src, size_t srcPitch, float *dst, size_t dstPitch, int rows, int cols);
 void GPUPyrDownAnnotation(unsigned char *prevScribbleImage, size_t prevScribblePitch, unsigned char *prevEditedImage, 
 	size_t prevEditedPitch, int previousRows, int previousCols, unsigned char *currScribbleImage, size_t currScribblePitch, 

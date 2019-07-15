@@ -36,9 +36,39 @@
 //Global variables shared by the distinct solvers
 float **devicePreviousImage;
 float **deviceNextImage;
-float **deviceWeights;
 float **deviceError;
-size_t *weightsPitch;
+int **devicehorizontalIndexToWeight;
+int **deviceverticalIndexToWeight;
+__constant__ float deviceWeights[256];
+
+__device__ float solveDiffusion(int left, int right, int up, int down, float *count, float sharedImage[][TILE_WIDTH + 2], int tidx, int tidy) {
+
+	count[0] = 0;
+	float weight = 0;
+	float sum = 0;
+	if (left < 256) {
+		weight = deviceWeights[left];
+		sum += weight * sharedImage[tidy][tidx - 1];
+		count[0] += weight;
+	}
+	if (right < 256) {
+		weight = deviceWeights[right];
+		sum += weight * sharedImage[tidy][tidx + 1];
+		count[0] += weight;
+	}
+	if (up < 256) {
+		weight = deviceWeights[up];
+		sum += weight * sharedImage[tidy - 1][tidx];
+		count[0] += weight;
+	}
+	if (down < 256) {
+		weight = deviceWeights[down];
+		sum += weight * sharedImage[tidy + 1][tidx];
+		count[0] += weight;
+	}
+	return sum / count[0];
+
+}
 
 void GPUCheckError(char *methodName) {
 
@@ -56,17 +86,18 @@ void GPUAllocateDeviceMemory(int rows, int cols, int levels) {
 	
 	devicePreviousImage = (float**)malloc(sizeof(float*) * levels);
 	deviceNextImage = (float**)malloc(sizeof(float*) * levels);
-	deviceWeights = (float**)malloc(sizeof(float*) * levels);
 	deviceError = (float**)malloc(sizeof(float*) * levels);
-	weightsPitch = (size_t*)malloc(sizeof(size_t*) * levels);
-	
+	devicehorizontalIndexToWeight = (int**)malloc(sizeof(int*) * levels);
+	deviceverticalIndexToWeight = (int**)malloc(sizeof(int*) * levels);
+
 	for(int level = 0; level < levels; level++) {
 		int rowsPerLevel = rows / powf(2, level);
-		int colsPerLevel = rows / powf(2, level);
+		int colsPerLevel = cols / powf(2, level);
 		cudaMalloc((void**)&devicePreviousImage[level], sizeof(float) * rowsPerLevel * colsPerLevel);
 		cudaMalloc((void**)&deviceNextImage[level], sizeof(float) * rowsPerLevel * colsPerLevel);
-		cudaMallocPitch((void**)&deviceWeights[level], &weightsPitch[level], colsPerLevel * 4 * sizeof(float), rowsPerLevel);
 		cudaMalloc((void**)&deviceError[level], sizeof(float) * rowsPerLevel * colsPerLevel);
+		cudaMalloc((void**)&devicehorizontalIndexToWeight[level], sizeof(int) * rowsPerLevel * colsPerLevel);
+		cudaMalloc((void**)&deviceverticalIndexToWeight[level], sizeof(int) * rowsPerLevel * colsPerLevel);
 	}
 
 #ifdef PARALUTION
@@ -81,8 +112,9 @@ void GPUFreeDeviceMemory(int levels) {
 	for(int level = 0; level < levels; level++) {
 		cudaFree(devicePreviousImage[level]);
 		cudaFree(deviceNextImage[level]);
-		cudaFree(deviceWeights[level]);
 		cudaFree(deviceError[level]);
+		cudaFree(devicehorizontalIndexToWeight[level]);
+		cudaFree(deviceverticalIndexToWeight[level]);
 	}
 
 #ifdef PARALUTION
@@ -162,7 +194,7 @@ __global__ void copyToPinnedData(float *output, float *input, size_t outputPitch
 
 }
 
-__global__ void computeWeights(unsigned char *grayImage, float *weights, size_t weightsPitch, size_t grayPitch, float beta, int rows, int cols)
+__global__ void loadIndexToWeight(unsigned char *grayImage, int *horizontalIndexToWeight, int *verticalIndexToWeight, size_t grayPitch, int rows, int cols)
 {
 
 	const int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -170,7 +202,6 @@ __global__ void computeWeights(unsigned char *grayImage, float *weights, size_t 
 
 	if(x >= cols || y >= rows) return;
 	
-	float *weightsRow = (float*)((char*)weights + y * weightsPitch);
 	unsigned char *grayImageRow = grayImage + y * grayPitch;
 	unsigned char *grayImageRowMinus = grayImage + (y - 1) * grayPitch;
 	unsigned char *grayImageRowPlus = grayImage + (y + 1) * grayPitch;
@@ -186,20 +217,22 @@ __global__ void computeWeights(unsigned char *grayImage, float *weights, size_t 
 	__syncthreads();
 	
 	unsigned char grayIntensity = sharedGrayImage[tidy][tidx];
-    if(x - 1 >= 0) weightsRow[x * 4 + 0] = expf(-beta * abs(grayIntensity - sharedGrayImage[tidy][tidx - 1]));
-    if(x + 1 < cols) weightsRow[x * 4 + 1] = expf(-beta * abs(grayIntensity - sharedGrayImage[tidy][tidx + 1]));
-    if(y - 1 >= 0) weightsRow[x * 4 + 2] = expf(-beta * abs(grayIntensity - sharedGrayImage[tidy - 1][tidx]));
-    if(y + 1 < rows) weightsRow[x * 4 + 3] = expf(-beta * abs(grayIntensity - sharedGrayImage[tidy + 1][tidx]));
-
+	int directions[4] = {257, 257, 257, 257};
+	if(x - 1 >= 0) directions[0] = abs(grayIntensity - sharedGrayImage[tidy][tidx - 1]);
+	if(x + 1 < cols) directions[1] = abs(grayIntensity - sharedGrayImage[tidy][tidx + 1]);
+	if(y - 1 >= 0) directions[2] = abs(grayIntensity - sharedGrayImage[tidy - 1][tidx]);
+	if(y + 1 < rows) directions[3] = abs(grayIntensity - sharedGrayImage[tidy + 1][tidx]);
+	horizontalIndexToWeight[y * cols + x] = directions[0] * 1000 + directions[1];
+	verticalIndexToWeight[y * cols + x] = directions[2] * 1000 + directions[3];
 }
 
-__global__ void jacobi(float *output, float *input, float *weights, unsigned char *scribbleImage, float *error, size_t inputPitch, 
-	size_t weightsPitch, size_t scribblePitch, int rows, int cols)
+__global__ void jacobi(float *output, float *input, int *horizontalIndexToWeight, int *verticalIndexToWeight, unsigned char *scribbleImage, float *error, size_t inputPitch, 
+	size_t scribblePitch, int rows, int cols)
 {
 
 	const int x = blockDim.x * blockIdx.x + threadIdx.x;
     const int y = blockDim.y * blockIdx.y + threadIdx.y;
-
+	
 	if(x >= cols || y >= rows) return;
 
 	int pixel = y * cols + x;
@@ -220,43 +253,26 @@ __global__ void jacobi(float *output, float *input, float *weights, unsigned cha
 	unsigned char *scribbleImageRow = scribbleImage + y * scribblePitch;
 	if(scribbleImageRow[x] == 255) return;
 	            
-    float count = 0;
-    float sum = 0;
-	float weight = 0;
-	float *weightsRow = (float*)((char*)weights + y * weightsPitch);
-	
-	if(x - 1 >= 0) {
-		weight = weightsRow[x * 4 + 0];
-		sum += weight * sharedImage[tidy][tidx - 1];
-		count += weight;
-	}
-    if(x + 1 < cols) {
-		weight = weightsRow[x * 4 + 1];
-		sum += weight * sharedImage[tidy][tidx + 1];
-		count += weight;
-	}
-    if(y - 1 >= 0) {
-		weight = weightsRow[x * 4 + 2];
-		sum += weight * sharedImage[tidy - 1][tidx];
-		count += weight;
-	}
-    if(y + 1 < rows) {
-		weight = weightsRow[x * 4 + 3];
-		sum += weight * sharedImage[tidy + 1][tidx];
-		count += weight;
-	}
+	int index = horizontalIndexToWeight[pixel];
+	int left = index / 1000;
+	int right = index % 1000;
+	index = verticalIndexToWeight[pixel];
+	int up = index / 1000;
+	int down = index % 1000;
+	float count[1];
+	float result = solveDiffusion(left, right, up, down, count, sharedImage, tidx, tidy);
 
 	if(count > 0) {
-		output[pixel] = sum/count;
-		error[pixel] = abs(sum/count - sharedImage[tidy][tidx]);
+		output[pixel] = result;
+		error[pixel] = abs(result - sharedImage[tidy][tidx]);
 	} else {
 		error[pixel] = 0;
 	}
 
 }
 
-__global__ void chebyshevSemiIterativeMethod(float *previousImage, float *output, float *input, float *weights, unsigned char *scribbleImage, 
-	float *error, size_t inputPitch, size_t weightsPitch, size_t scribblePitch, float omega, float gamma, int rows, int cols)
+__global__ void chebyshevSemiIterativeMethod(float *previousImage, float *output, float *input, int *horizontalIndexToWeight, int *verticalIndexToWeight, 
+	unsigned char *scribbleImage, float *error, size_t inputPitch, size_t scribblePitch, float omega, float gamma, int rows, int cols)
 {
 
 	const int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -282,44 +298,27 @@ __global__ void chebyshevSemiIterativeMethod(float *previousImage, float *output
 	unsigned char *scribbleImageRow = scribbleImage + y * scribblePitch;
 	if(scribbleImageRow[x] == 255) return;
 	            
-    float count = 0;
-    float sum = 0;
-	float weight = 0;
-	float *weightsRow = (float*)((char*)weights + y * weightsPitch);
-	
-	if(x - 1 >= 0) {
-		weight = weightsRow[x * 4 + 0];
-		sum += weight * sharedImage[tidy][tidx - 1];
-		count += weight;
-	}
-    if(x + 1 < cols) {
-		weight = weightsRow[x * 4 + 1];
-		sum += weight * sharedImage[tidy][tidx + 1];
-		count += weight;
-	}
-    if(y - 1 >= 0) {
-		weight = weightsRow[x * 4 + 2];
-		sum += weight * sharedImage[tidy - 1][tidx];
-		count += weight;
-	}
-    if(y + 1 < rows) {
-		weight = weightsRow[x * 4 + 3];
-		sum += weight * sharedImage[tidy + 1][tidx];
-		count += weight;
-	}
+    int index = horizontalIndexToWeight[pixel];
+	int left = index / 1000;
+	int right = index % 1000;
+	index = verticalIndexToWeight[pixel];
+	int up = index / 1000;
+	int down = index % 1000;
+	float count[1];
+	float result = solveDiffusion(left, right, up, down, count, sharedImage, tidx, tidy);
 
-	if(count > 0) {
+	if(count[0] > 0) {
 		float previousColor = previousImage[pixel];
-		output[pixel] = (omega * (gamma * (sum/count - sharedImage[tidy][tidx]) + sharedImage[tidy][tidx] - previousColor)) + previousColor;
+		output[pixel] = (omega * (gamma * (result - sharedImage[tidy][tidx]) + sharedImage[tidy][tidx] - previousColor)) + previousColor;
 		previousImage[pixel] = sharedImage[tidy][tidx];
-		error[pixel] = abs(sum/count - sharedImage[tidy][tidx]);
+		error[pixel] = abs(result - sharedImage[tidy][tidx]);
 	} else {
 		error[pixel] = 0;
 	}
 
 }
 
-__global__ void gaussSeidel(float *image, float *weights, unsigned char *scribbleImage, float *error, size_t imagePitch, size_t weightsPitch, 
+__global__ void gaussSeidel(float *image, int *horizontalIndexToWeight, int *verticalIndexToWeight, unsigned char *scribbleImage, float *error, size_t imagePitch,
 	size_t scribblePitch, int color, float omega, int rows, int cols)
 {
 
@@ -347,39 +346,32 @@ __global__ void gaussSeidel(float *image, float *weights, unsigned char *scribbl
 	if(scribbleImageRow[x] == 255) return;
 	if(abs((x % 2) - (y % 2)) != color) return;
 	            
-    float count = 0;
-    float sum = 0;
-	float weight = 0;
-	float *weightsRow = (float*)((char*)weights + y * weightsPitch);
-	
-	if(x - 1 >= 0) {
-		weight = weightsRow[x * 4 + 0];
-		sum += weight * sharedImage[tidy][tidx - 1];
-		count += weight;
-	}
-    if(x + 1 < cols) {
-		weight = weightsRow[x * 4 + 1];
-		sum += weight * sharedImage[tidy][tidx + 1];
-		count += weight;
-	}
-    if(y - 1 >= 0) {
-		weight = weightsRow[x * 4 + 2];
-		sum += weight * sharedImage[tidy - 1][tidx];
-		count += weight;
-	}
-    if(y + 1 < rows) {
-		weight = weightsRow[x * 4 + 3];
-		sum += weight * sharedImage[tidy + 1][tidx];
-		count += weight;
-	}
+    int index = horizontalIndexToWeight[pixel];
+	int left = index / 1000;
+	int right = index % 1000;
+	index = verticalIndexToWeight[pixel];
+	int up = index / 1000;
+	int down = index % 1000;
 
-	if(count > 0) {
-		error[pixel] = abs(sum/count - sharedImage[tidy][tidx]);
+	float count[1];
+	float result = solveDiffusion(left, right, up, down, count, sharedImage, tidx, tidy);
+
+	if(count[0] > 0) {
+		error[pixel] = abs(result - sharedImage[tidy][tidx]);
 		float depth = sharedImage[tidy][tidx];
-		imageRow[x] = omega * (sum / count - depth) + depth;
+		imageRow[x] = omega * (result - depth) + depth;
 	} else {
 		error[pixel] = 0;
 	}
+
+}
+
+void GPULoadWeights(float beta) {
+	
+	float weights[256];
+	for(int w = 0; w < 256; w++) weights[w] = expf(-beta * w);
+	cudaMemcpyToSymbol(deviceWeights, weights, 256 * sizeof(float), 0, cudaMemcpyHostToDevice);
+	GPUCheckError("GPULoadWeights");
 
 }
 
@@ -420,14 +412,14 @@ void GPUJacobi(float *depthImage, size_t depthPitch, unsigned char *scribbleImag
 	
 	cudaMemset(devicePreviousImage[level], 0, rows * cols * sizeof(float));
 	copyFromPinnedData<<<grid, threads>>>(deviceNextImage[level], depthImage, depthPitch, rows, cols);
-	computeWeights<<<grid, threads>>>(grayImage, deviceWeights[level], weightsPitch[level], grayPitch, beta, rows, cols);
+	loadIndexToWeight<<<grid, threads>>>(grayImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], grayPitch, rows, cols);
 	
 	for(iteration = 0; iteration < maxIterations; iteration++) {
 		
 		if(!chebyshevVariant) {
 		
-			jacobi<<<grid, threads>>>(deviceNextImage[level], depthImage, deviceWeights[level], scribbleImage, deviceError[level], 
-				depthPitch, weightsPitch[level], scribblePitch, rows, cols);
+			jacobi<<<grid, threads>>>(deviceNextImage[level], depthImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
+				scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols);
 		
 		} else {
 			
@@ -436,7 +428,7 @@ void GPUJacobi(float *depthImage, size_t depthPitch, unsigned char *scribbleImag
 			else omega = 4.0 / (4.0 - rho * rho * omega);
 
 			chebyshevSemiIterativeMethod<<<grid, threads>>>(devicePreviousImage[level], deviceNextImage[level], depthImage, 
-				deviceWeights[level], scribbleImage, deviceError[level], depthPitch, weightsPitch[level], scribblePitch, omega, gamma, rows, cols);
+				devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], scribbleImage, deviceError[level], depthPitch, scribblePitch, omega, gamma, rows, cols);
 
 		} 
 		
@@ -467,11 +459,11 @@ void GPUGaussSeidel(float *depthImage, size_t depthPitch, unsigned char *scribbl
     dim3 grid(divUp(cols, threads.x), divUp(rows, threads.y));
 	int maxColors = 2;
 
-	computeWeights<<<grid, threads>>>(grayImage, deviceWeights[level], weightsPitch[level], grayPitch, beta, rows, cols);
+	loadIndexToWeight<<<grid, threads>>>(grayImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], grayPitch, rows, cols);
 	for(iteration = 0; iteration < maxIterations; iteration++) {
 
 		for(int color = 0; color < maxColors; color++)
-			gaussSeidel<<<grid, threads>>>(depthImage, deviceWeights[level], scribbleImage, deviceError[level], depthPitch, weightsPitch[level], 
+			gaussSeidel<<<grid, threads>>>(depthImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], scribbleImage, deviceError[level], depthPitch,
 				scribblePitch, color, omega, rows, cols);
 	
 		if(iteration % 100 == 0) {
