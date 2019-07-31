@@ -53,3 +53,4 @@ Menu:
 		This effect must be activated after the depth diffusion process
 		The resulting image will be shown in the "Artistic Image"
 	
+	Press 'm' or 'M' to change between our approach and related work

@@ -26,12 +26,19 @@ References:
 		Paralution BiCGStab - 0.8 s
 		ViennaCL BiCGStab - 0.7 s
 */
+//#define OPENCV_4_WITH_CUDA
 
 #include "Solver.h"
 #include "GPUSolver.h"
 #include <vector>
 #include <opencv2/opencv.hpp>
-#include <opencv2/gpu/gpu.hpp>
+#ifdef OPENCV_4_WITH_CUDA
+	#include <opencv2/core/cuda.hpp>
+	using namespace cv::cuda;
+#else
+	#include <opencv2/gpu/gpu.hpp>
+	using namespace cv::gpu;
+#endif
 
 bool buttonIsPressed = false;
 int key = 0;
@@ -252,6 +259,7 @@ int main(int argc, const char *argv[])
 	//Read arguments
 	std::string inputFileName, annotatedFileName;
 	int solverCode = 3;
+	std::string method = "Guo";
 	for(int argument = 1; argument < argc - 1; argument++) {
 		if (!strcmp(argv[argument], "-i"))
 			inputFileName.assign(argv[argument + 1]);
@@ -281,23 +289,23 @@ int main(int argc, const char *argv[])
 
 	//Initialize device variables
 	cv::Mat floatDepthImage = cv::Mat(cv::Size(originalImage.cols, originalImage.rows), CV_32FC1);
-	cv::gpu::GpuMat deviceOriginalImage = cv::gpu::GpuMat(originalImage);
-	std::vector<cv::gpu::GpuMat> deviceGrayImage;
-	std::vector<cv::gpu::GpuMat> deviceEditedImage;
-	std::vector<cv::gpu::GpuMat> deviceScribbleImage;
-	std::vector<cv::gpu::GpuMat> deviceDepthImage;
+	GpuMat deviceOriginalImage = GpuMat(originalImage);
+	std::vector<GpuMat> deviceGrayImage;
+	std::vector<GpuMat> deviceEditedImage;
+	std::vector<GpuMat> deviceScribbleImage;
+	std::vector<GpuMat> deviceDepthImage;
 	deviceEditedImage.resize(pyrLevels);
 	deviceScribbleImage.resize(pyrLevels);
 	deviceDepthImage.resize(pyrLevels);
 	deviceGrayImage.resize(pyrLevels);
 	for (int level = 0; level < pyrLevels; level++) {
 		cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
-		deviceEditedImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC3); 
+		deviceEditedImage[level] = GpuMat(pyrSize, CV_8UC3); 
 		deviceEditedImage[level].setTo(cv::Scalar(0));
-		deviceScribbleImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC1);
+		deviceScribbleImage[level] = GpuMat(pyrSize, CV_8UC1);
 		deviceScribbleImage[level].setTo(cv::Scalar(0));
-		deviceGrayImage[level] = cv::gpu::GpuMat(pyrSize, CV_8UC1);
-		deviceDepthImage[level] = cv::gpu::GpuMat(pyrSize, CV_32FC1);
+		deviceGrayImage[level] = GpuMat(pyrSize, CV_8UC1);
+		deviceDepthImage[level] = GpuMat(pyrSize, CV_32FC1);
 	}
 	GPUAllocateDeviceMemory(originalImage.rows, originalImage.cols, pyrLevels);
 	
@@ -311,9 +319,11 @@ int main(int argc, const char *argv[])
     solver->setBeta(beta);
     solver->setErrorThreshold(tolerance);
     solver->setMaximumNumberOfIterations(maxIterations);
+	solver->setMaxLevel(pyrLevels - 1);
 	if(isDebugEnabled) solver->enableDebug();
 	GPULoadWeights(beta);
 
+	//Load supplementary images (if any)
     editedImage[0] = cv::imread(inputFileName);
     if(annotatedFileName.size() > 1) {
         scribbleImage[0] = cv::imread(annotatedFileName, 0);
@@ -361,12 +371,31 @@ int main(int argc, const char *argv[])
             
             double begin = cpuTime();
             
+			solver->setMethod(method);
 			if (solverName.find("GPU") != std::string::npos) {
-			
+
+#ifdef OPENCV_4_WITH_CUDA
+				deviceOriginalImage.download(originalImage);
+				cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
+				deviceGrayImage[0].upload(grayImage[0]);
+#else
 				cv::gpu::cvtColor(deviceOriginalImage, deviceGrayImage[0], cv::COLOR_BGR2GRAY);
+#endif
 				deviceScribbleImage[0].upload(scribbleImage[0]);
 				deviceEditedImage[0].upload(editedImage[0]);
+
+#ifdef OPENCV_4_WITH_CUDA
+				for (int level = 1; level < pyrLevels; level++)
+					cv::pyrDown(grayImage[level - 1], grayImage[level]);
+				pyrDownAnnotation(editedImage, scribbleImage, pyrLevels);
+				for (int level = 0; level < pyrLevels; level++) {
+					deviceGrayImage[level].upload(grayImage[level]);
+					deviceScribbleImage[level].upload(scribbleImage[level]);
+					deviceEditedImage[level].upload(editedImage[level]);
+				}
+#else
 				for (int level = 1; level < pyrLevels; level++) {
+
 					if(((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
 						cv::gpu::pyrDown(deviceGrayImage[level - 1], deviceGrayImage[level]);
 					else {
@@ -380,26 +409,24 @@ int main(int argc, const char *argv[])
 						deviceEditedImage[level].ptr(), deviceEditedImage[level].step, deviceEditedImage[level].rows,
 						deviceEditedImage[level].cols);
 				}
-				
+#endif				
 				GPUConvertToFloat(deviceEditedImage[pyrLevels - 1].ptr(), deviceEditedImage[pyrLevels - 1].step,
 					deviceDepthImage[pyrLevels - 1].ptr<float>(), deviceDepthImage[pyrLevels - 1].step, deviceEditedImage[pyrLevels - 1].rows,
 					deviceEditedImage[pyrLevels - 1].cols);
 				
 				for (int level = pyrLevels - 1; level >= 0; level--) {
 
-					if (solverName == "GPU-Jacobi")
-						GPUJacobi(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(), 
-							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
-							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, false, level);
-					else if (solverName == "GPU-Jacobi-Chebyshev")
-						GPUJacobi(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
-							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
-							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, true, level);
-					else if (solverName == "GPU-GaussSeidel")
-						GPUGaussSeidel(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
-							deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, 
-							depthImage[level].rows, depthImage[level].cols, beta, maxIterations, tolerance, isDebugEnabled, level);
-					
+					GPUMatrixFreeSolver(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
+						deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, depthImage[level].rows,
+						depthImage[level].cols, beta, maxIterations, tolerance, solverName, method, level, isDebugEnabled);
+
+#ifdef OPENCV_4_WITH_CUDA
+					if (level > 0) {
+						deviceDepthImage[level].download(floatDepthImage);
+						cv::pyrUp(floatDepthImage, floatDepthImage, depthImage[level - 1].size());
+						deviceDepthImage[level - 1].upload(floatDepthImage);
+					}
+#else
 					if (level > 0) {
 						
 						if(deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols)
@@ -411,12 +438,14 @@ int main(int argc, const char *argv[])
 						}
 						
 					}
+#endif
 
 				}
 
 				deviceDepthImage[0].download(floatDepthImage);
 				for (int pixel = 0; pixel < originalImage.rows * originalImage.cols; pixel++)
 					depthImage[0].ptr<unsigned char>()[pixel] = (unsigned char)floatDepthImage.ptr<float>()[pixel];
+				if(method == "Macedo") cv::medianBlur(depthImage[0], depthImage[0], 11);
 
 			} else {
 
@@ -451,45 +480,40 @@ int main(int argc, const char *argv[])
 
 					for (int level = pyrLevels - 1; level >= 0; level--) {
 
-						if (solverName == "CPU-Jacobi")
-							solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, false);
-						else if (solverName == "CPU-Jacobi-Chebyshev")
-							solver->runJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, true);
-						else if (solverName == "CPU-GaussSeidel")
-							solver->runGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+						if (method == "Macedo") solver->computeEdges(depthImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
+						solver->computePositions(depthImage[level].rows, depthImage[level].cols);
+						solver->computeWeights(grayImage[level].ptr<unsigned char>(), depthImage[level].ptr<unsigned char>(), level, depthImage[level].rows, depthImage[level].cols);
+
+						if (solverName.find("CPU") != std::string::npos)
+							solver->runMatrixFreeSolver(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, solverName);
 						else if (solverName == "Eigen-BiCGStab")
 							solver->runConjugateGradient(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
 								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols);
-						else if (solverName == "CUSP-Jacobi")
-							CUSPJacobi(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-								tolerance, isDebugEnabled);
-						else if (solverName == "CUSP-GaussSeidel")
-							CUSPGaussSeidel(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-								tolerance, isDebugEnabled);
+						else if (solverName == "CUSP-Jacobi" || solverName == "CUSP-GaussSeidel")
+							CUSPMatrixFreeSolver(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
+								grayImage[level].ptr<unsigned char>(), solver->getWeights(), depthImage[level].rows, depthImage[level].cols, 
+								beta, maxIterations, tolerance, solverName, isDebugEnabled);
 						else if (solverName == "CUSP-BiCGStab")
 							CUSPPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-								tolerance, isDebugEnabled);
+								grayImage[level].ptr<unsigned char>(), solver->getWeights(), depthImage[level].rows, depthImage[level].cols, 
+								beta, maxIterations, tolerance, isDebugEnabled);
 						else if (solverName == "Paralution-BiCGStab")
 							ParalutionPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-								tolerance);
+								grayImage[level].ptr<unsigned char>(), solver->getWeights(), depthImage[level].rows, depthImage[level].cols, 
+								beta, maxIterations, tolerance);
 						else if (solverName == "ViennaCL-BiCGStab")
 							ViennaCLPCG(depthImage[level].ptr<unsigned char>(), scribbleImage[level].ptr<unsigned char>(),
-								grayImage[level].ptr<unsigned char>(), depthImage[level].rows, depthImage[level].cols, beta, maxIterations,
-								tolerance);
+								grayImage[level].ptr<unsigned char>(), solver->getWeights(), depthImage[level].rows, depthImage[level].cols, 
+								beta, maxIterations, tolerance);
 
 						if (level > 0) cv::pyrUp(depthImage[level], depthImage[level - 1], depthImage[level - 1].size());
-						
+						else if(method == "Macedo") cv::medianBlur(depthImage[0], depthImage[0], 11);
+
 					}
 
 				}
-
+				
 			}
 			
 			double end = cpuTime();
@@ -511,7 +535,25 @@ int main(int argc, const char *argv[])
             cv::imwrite("Scribble.png", imageToSave);
         
 		}
-        
+
+		if (key == 't' || key == 'T') {
+
+			cv::Mat imageToSave = cv::Mat::zeros(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
+			for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
+				for (int ch = 0; ch < 3; ch++)
+					imageToSave.ptr<unsigned char>()[pixel * 3 + ch] = depthImage[0].ptr<unsigned char>()[pixel];
+			}
+			cv::imwrite("A.png", imageToSave);
+
+		}
+
+		if (key == 'm' || key == 'M') {
+
+			method = (method == "Guo") ? "Macedo" : "Guo";
+			std::cout << method << "'s method has been enabled" << std::endl;
+		
+		}
+		
     }
 
     delete solver;

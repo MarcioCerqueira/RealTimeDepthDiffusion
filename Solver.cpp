@@ -3,43 +3,53 @@
 Solver::Solver(int rows, int cols)
 {
     
-    image = (float*)malloc(sizeof(float) * rows * cols);
-    debugImage = cv::Mat::zeros(cv::Size(cols, rows), CV_8UC1);
-    this->rows = rows;
-    this->cols = cols;
-    this->isDebugEnabled = false;
-
+	this->rows = rows;
+	this->cols = cols;
+	this->isDebugEnabled = false;
+	
+	image = (float*)malloc(sizeof(float) * rows * cols);
+    debugImage = cv::Mat::zeros(cv::Size(cols, rows), CV_8UC1); 
+	weights = (float*)malloc(rows * cols * 4 * sizeof(float));
+	positions = (int*)malloc(rows * cols * 4 * sizeof(int));
+	edges = (int*)malloc(rows * cols * sizeof(int));
+	
 }
 
 Solver::~Solver()
 {
-    delete [] image;
+
+	delete [] image;
+	delete [] weights;
+	delete [] positions;
+	delete [] edges;
+
 }
 
-void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, 
-	bool chebyshevVariant)
+void Solver::runMatrixFreeSolver(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, 
+	std::string solverMethod)
 {
 
 	float error = 0;
 	int iteration;
 	float *previousImage = (float*)malloc(sizeof(float) * rows * cols);
 	float *nextImage = (float*)malloc(sizeof(float) * rows * cols);
-	float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
-    int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
-    //For Chebyshev's variant
+	
+    //Parameters for Jacobi + Chebyshev
 	int S = 10;
-	float omega;
+	float omega = 1.9;
 	float rho = 0.99;
 	float gamma = 0.99;
-	computeWeights(weights, grayImage, rows, cols);
-    computePositions(positions, rows, cols);
+	//Parameter for Gauss-Seidel
+	float theta = 1.9;
 
-    for(int pixel = 0; pixel < rows * cols; pixel++) {
-		previousImage[pixel] = 0;
+	for (int pixel = 0; pixel < rows * cols; pixel++) {
 		image[pixel] = depthImage[pixel];
-		nextImage[pixel] = depthImage[pixel];
-    }
-    
+		if (solverMethod != "CPU-GaussSeidel") {
+			previousImage[pixel] = 0;
+			nextImage[pixel] = depthImage[pixel];
+		}
+	}
+   
 	for(iteration = 0; iteration < maxIterations; iteration++) {
 
 		error = 0;
@@ -58,15 +68,17 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
                     }
                 }
 
-                if(count > 0) {
+				//Successive Over-Relaxation (SOR) for Gauss-Seidel only
+				if(count > 0) {
                     error += fabs(sum/count - image[pixel]);
-                    nextImage[pixel] = sum/count;
+					if(solverMethod == "CPU-GaussSeidel") image[pixel] = theta * (sum / count - image[pixel]) + image[pixel];
+					else nextImage[pixel] = sum/count;
                 }
                 
             }
         }
         
-		if (chebyshevVariant) {
+		if (solverMethod == "CPU-Jacobi-Chebyshev") {
 			
 			if (iteration < S) omega = 1;
 			else if (iteration == S) omega = 2.0 / (2.0 - rho * rho);
@@ -79,7 +91,7 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
 				image[pixel] = nextImage[pixel];
 			}
 
-		} else {
+		} else if (solverMethod == "CPU-Jacobi") {
 		
 			for (int pixel = 0; pixel < rows * cols; pixel++)
 				image[pixel] = nextImage[pixel];
@@ -97,66 +109,6 @@ void Solver::runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, 
 
 	delete [] previousImage;
     delete [] nextImage;
-    delete [] weights;
-    delete [] positions;
-
-}
-
-void Solver::runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols)
-{
-    
-    float error = 0;
-	float omega = 1.9;
-	int iteration;
-	float *weights = (float*)malloc(rows * cols * 4 * sizeof(float));
-    int *positions = (int*)malloc(rows * cols * 4 * sizeof(int));
-	computeWeights(weights, grayImage, rows, cols);
-    computePositions(positions, rows, cols);
-	
-	for (int pixel = 0; pixel < rows * cols; pixel++)
-		image[pixel] = depthImage[pixel];
-
-	for(iteration = 0; iteration < maxIterations; iteration++) {
-
-        error = 0;  
-
-        for(int y = 0; y < rows; y++) {
-            for(int x = 0; x < cols; x++) {
-
-                int pixel = y * cols + x;
-                if(scribbleImage[pixel] == 255) continue;
-
-                float count = 0;
-                float sum = 0;
-                for(int neighbour = 0; neighbour < 4; neighbour++) {
-                    if(positions[pixel * 4 + neighbour] != -1) {
-                        sum += weights[pixel * 4 + neighbour] * image[positions[pixel * 4 + neighbour]];
-                        count += weights[pixel * 4 + neighbour];
-                    }
-                }
-
-                if(count > 0) {
-
-                    error += fabs(sum/count - image[pixel]);
-					//Successive Over-Relaxation (SOR)
-                    image[pixel] = omega * (sum / count - image[pixel]) + image[pixel];
-					
-                }
-                
-            }
-        }
-        
-        error /= (rows * cols);
-        if(error < threshold) break;
-    
-	}
-
-	if(isDebugEnabled) std::cout << "Iterations: " << iteration << " | Error: " << error << std::endl;
-    for(int pixel = 0; pixel < rows * cols; pixel++)
-        depthImage[pixel] = image[pixel];
-
-    delete [] weights;
-    delete [] positions;
 
 }
 
@@ -168,10 +120,9 @@ void Solver::runConjugateGradient(unsigned char *depthImage, unsigned char *scri
     Eigen::VectorXd b = Eigen::VectorXd::Zero(rows * cols);
     Eigen::VectorXd x = Eigen::VectorXd::Zero(rows * cols);
 
-    std::vector<Eigen::Triplet<double> > tripletList;
+	std::vector<Eigen::Triplet<double> > tripletList;
     tripletList.reserve(rows * cols * 5);
-    float weight;
-
+	
     for(int pixel = 0; pixel < rows * cols; pixel++)
         x(pixel) = depthImage[pixel];
 	
@@ -187,24 +138,20 @@ void Solver::runConjugateGradient(unsigned char *depthImage, unsigned char *scri
 
             float sum = 0;
             if(x < cols - 1) { 
-                weight = expf(-beta * fabs(grayImage[pixel] - grayImage[y * cols + x + 1]));   
-                tripletList.push_back(Eigen::Triplet<double>(pixel, y * cols + x + 1, -weight)); 
-                sum += weight; 
+				tripletList.push_back(Eigen::Triplet<double>(pixel, y * cols + x + 1, -weights[pixel * 4 + 1]));
+                sum += weights[pixel * 4 + 1];
             }
             if(x > 0) { 
-                weight = expf(-beta * fabs(grayImage[pixel] - grayImage[y * cols + x - 1]));   
-                tripletList.push_back(Eigen::Triplet<double>(pixel, y * cols + x - 1, -weight)); 
-                sum += weight; 
+                tripletList.push_back(Eigen::Triplet<double>(pixel, y * cols + x - 1, -weights[pixel * 4 + 0]));
+                sum += weights[pixel * 4 + 0];
             }
             if(y < rows - 1) {
-                weight = expf(-beta * fabs(grayImage[pixel] - grayImage[(y + 1) * cols + x]));   
-                tripletList.push_back(Eigen::Triplet<double>(pixel, (y + 1) * cols + x, -weight));
-                sum += weight;
+                tripletList.push_back(Eigen::Triplet<double>(pixel, (y + 1) * cols + x, -weights[pixel * 4 + 3]));
+                sum += weights[pixel * 4 + 3];
             }
             if(y > 0) { 
-                weight = expf(-beta * fabs(grayImage[pixel] - grayImage[(y - 1) * cols + x]));   
-                tripletList.push_back(Eigen::Triplet<double>(pixel, (y - 1) * cols + x, -weight)); 
-                sum += weight; 
+                tripletList.push_back(Eigen::Triplet<double>(pixel, (y - 1) * cols + x, -weights[pixel * 4 + 2]));
+                sum += weights[pixel * 4 + 2];
             }
             tripletList.push_back(Eigen::Triplet<double>(pixel, pixel, sum));
             
@@ -213,9 +160,9 @@ void Solver::runConjugateGradient(unsigned char *depthImage, unsigned char *scri
 	
 	
     A.setFromTriplets(tripletList.begin(), tripletList.end());
-	Eigen::BiCGSTAB<Eigen::SparseMatrix<double>, Eigen::IncompleteLUT<double>> cg;
-	cg.preconditioner().setDroptol(1e-03);
-	//Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cg;
+	//Eigen::BiCGSTAB<Eigen::SparseMatrix<double>, Eigen::IncompleteLUT<double>> cg;
+	//cg.preconditioner().setDroptol(1e-03);
+	Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cg;
 	cg.compute(A);
 	cg.setMaxIterations(maxIterations);
     cg.setTolerance(threshold);
@@ -241,7 +188,10 @@ void Solver::runAMG(unsigned char *depthImage, unsigned char *scribbleImage, uns
 	Epetra_Vector x(map);
 	Epetra_Vector b(map);
 
-	double weights[5];
+	computePositions(rows, cols);
+	computeWeights(grayImage, depthImage, maxLevel, rows, cols);
+
+	double w[5];
 	int indices[5];
 	int i = 0;
 	for (int y = 0; y < rows; y++) {
@@ -250,41 +200,41 @@ void Solver::runAMG(unsigned char *depthImage, unsigned char *scribbleImage, uns
 			double sum = 0;
 			int count = 0;
 			if (scribbleImage[pixel] == 255) {
-				weights[0] = 1;
+				w[0] = 1;
 				indices[0] = pixel;
-				A.InsertGlobalValues(myGlobalElements[i], 1, weights, indices);
+				A.InsertGlobalValues(myGlobalElements[i], 1, w, indices);
 				b[pixel] = depthImage[pixel];
 				i++;
 				continue;
 			}
 			if (x < cols - 1) {
-				weights[count] = -expf(-beta * fabs(grayImage[pixel] - grayImage[y * cols + x + 1]));
+				w[count] = -weights[pixel * 4 + 1];
 				indices[count] = y * cols + x + 1;
-				sum += -weights[count];
+				sum += -w[count];
 				count++;
 			}
 			if (x > 0) {
-				weights[count] = -expf(-beta * fabs(grayImage[pixel] - grayImage[y * cols + x - 1]));
+				w[count] = -weights[pixel * 4 + 0];
 				indices[count] = y * cols + x - 1;
-				sum += -weights[count];
+				sum += -w[count];
 				count++;
 			}
 			if (y < rows - 1) {
-				weights[count] = -expf(-beta * fabs(grayImage[pixel] - grayImage[(y + 1) * cols + x]));
+				w[count] = -weights[pixel * 4 + 3];
 				indices[count] = (y + 1) * cols + x;
-				sum += -weights[count];
+				sum += -w[count];
 				count++;
 			}
 			if (y > 0) {
-				weights[count] = -expf(-beta * fabs(grayImage[pixel] - grayImage[(y - 1) * cols + x]));
+				w[count] = -weights[pixel * 4 + 2];
 				indices[count] = (y - 1) * cols + x;
-				sum += -weights[count];
+				sum += -w[count];
 				count++;
 			}
-			weights[count] = sum;
+			w[count] = sum;
 			indices[count] = pixel;
 			count++;
-			A.InsertGlobalValues(myGlobalElements[i], count, weights, indices);
+			A.InsertGlobalValues(myGlobalElements[i], count, w, indices);
 			i++;
 		}
 	}
@@ -293,51 +243,7 @@ void Solver::runAMG(unsigned char *depthImage, unsigned char *scribbleImage, uns
 		x[pixel] = depthImage[pixel];
 
 	A.FillComplete();
-	/*
-	//Belos version
-	Teuchos::RCP<Epetra_Map> belosMap = Teuchos::rcp(&map, false);
-	Teuchos::RCP<Epetra_CrsMatrix> belosA = Teuchos::rcp(&A, false);
-	Teuchos::RCP<Epetra_Vector> belosVecB = Teuchos::rcp(&b, false);
-	Teuchos::RCP<Epetra_Vector> belosVecX = Teuchos::rcp(&x, false);
-	Teuchos::RCP<Epetra_MultiVector> belosB = Teuchos::rcp_implicit_cast<Epetra_MultiVector>(belosVecB);
-	Teuchos::RCP<Epetra_MultiVector> belosX = Teuchos::rcp_implicit_cast<Epetra_MultiVector>(belosVecX);
 
-	belosA->OptimizeStorage();
-	Teuchos::ParameterList belosList;
-	belosList.set("Block Size", 1);
-	belosList.set("Maximum Iterations", maxIterations * 3);
-	belosList.set("Convergence Tolerance", 1e-07);
-	//belosList.set("Verbosity", Belos::Errors + Belos::Warnings +
-	//	Belos::TimingDetails + Belos::FinalSummary +
-	//	Belos::StatusTestDetails);
-	Belos::LinearProblem<double, Epetra_MultiVector, Epetra_Operator> problem(belosA, belosX, belosB);
-	bool set = problem.setProblem();
-	Teuchos::RCP< Belos::SolverManager<double, Epetra_MultiVector, Epetra_Operator> > solver =
-	Teuchos::rcp(new Belos::BlockCGSolMgr<double, Epetra_MultiVector, Epetra_Operator>(Teuchos::rcp(&problem, false), Teuchos::rcp(&belosList, false)));
-	solver->solve();
-
-	for (int pixel = 0; pixel < rows * cols; pixel++)
-	depthImage[pixel] = belosX->Pointers()[0][pixel];
-	*/
-
-	/*
-	// AztecOO version
-	Epetra_LinearProblem problem(&A, &x, &b);
-	AztecOO solver(problem);
-
-	solver.SetAztecOption(AZ_solver, AZ_bicgstab);
-	solver.SetAztecOption(AZ_precond, AZ_Jacobi);
-	solver.SetAztecOption(AZ_diagnostics, AZ_none);
-	solver.SetAztecOption(AZ_output, AZ_none);
-	solver.Iterate(maxIterations, threshold);
-	std::cout << "#iterations:     " << solver.NumIters() << std::endl;
-	std::cout << "estimated error: " << solver.TrueResidual() << std::endl;
-
-	for (int pixel = 0; pixel < rows * cols; pixel++)
-	depthImage[pixel] = x[pixel];
-	*/
-
-	// AztecOO version
 	Epetra_LinearProblem problem(&A, &x, &b);
 	AztecOO solver(problem);
 
@@ -384,34 +290,43 @@ void Solver::runLAHBPCG(unsigned char *depthImage, unsigned char *scribbleImage,
 	
 }
 
-void Solver::computeWeights(float *weights, unsigned char *grayImage, int rows, int cols)
+void Solver::computeWeights(unsigned char *grayImage, unsigned char *depthImage, int level, int rows, int cols)
 {
 
     for(int y = 0; y < rows; y++) {
         for(int x = 0; x < cols; x++) {
 
-            int positions[4];
-            int pixel = y * cols + x;
-            for(int neighbour = 0; neighbour < 4; neighbour++)
-                positions[neighbour] = -1;
-                
-            if(x - 1 >= 0) positions[0] = y * cols + x - 1;
-            if(x + 1 < cols) positions[1] = y * cols + x + 1;
-            if(y - 1 >= 0) positions[2] = (y - 1) * cols + x;
-            if(y + 1 < rows) positions[3] = (y + 1) * cols + x;
+			int pixel = y * cols + x;
 
-            for(int neighbour = 0; neighbour < 4; neighbour++) {
-                if(positions[neighbour] != -1) {
-                    weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[neighbour]]));
-                }
-            }
+			if (method == "Guo" || (method == "Macedo" && level == maxLevel)) {
+			
+				for (int neighbour = 0; neighbour < 4; neighbour++)
+					if (positions[pixel * 4 + neighbour] != -1)
+						weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[pixel * 4 + neighbour]]));
+			
+			} else if (method == "Macedo" && level != 0) {
+
+				for (int neighbour = 0; neighbour < 4; neighbour++) {
+					if (positions[pixel * 4 + neighbour] != -1) {
+						if (edges[pixel] != 0 && edges[positions[pixel * 4 + neighbour]] != 0) weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[pixel * 4 + neighbour]]));
+						else weights[pixel * 4 + neighbour] = expf(-beta * fabs(depthImage[pixel] - depthImage[positions[pixel * 4 + neighbour]]));
+					}
+				}
+
+			} else {
+
+				for (int neighbour = 0; neighbour < 4; neighbour++)
+					if (positions[pixel * 4 + neighbour] != -1)
+						weights[pixel * 4 + neighbour] = expf(-beta * fabs(depthImage[pixel] - depthImage[positions[pixel * 4 + neighbour]]));
+
+			}
 
         }
     }
 
 }
 
-void Solver::computePositions(int *positions, int rows, int cols)
+void Solver::computePositions(int rows, int cols)
 {
 
     for(int y = 0; y < rows; y++) {
@@ -428,5 +343,28 @@ void Solver::computePositions(int *positions, int rows, int cols)
 
         }
     }
+
+}
+
+void Solver::computeEdges(unsigned char *depthImage, int rows, int cols)
+{
+
+	for (int pixel = 0; pixel < rows * cols; pixel++)
+		edges[pixel] = 0;
+
+	for (int x = 1; x < cols - 1; x++) {
+		for (int y = 1; y < rows - 1; y++) {
+
+			int center = depthImage[y * cols + x];
+			int top = depthImage[(y - 1) * cols + x];
+			int bottom = depthImage[(y + 1) * cols + x];
+			int left = depthImage[y * cols + x - 1];
+			int right = depthImage[y * cols + x + 1];
+
+			if (abs(center - top) > 4 || abs(center - bottom) > 4 || abs(center - left) > 4 || abs(center - right) > 4) edges[y * cols + x] = 255;
+			else edges[y * cols + x] = 0;
+
+		}
+	}
 
 }

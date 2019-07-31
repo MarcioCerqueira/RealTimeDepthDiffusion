@@ -4,6 +4,7 @@
 #include <opencv2/opencv.hpp>
 #include <Eigen/Core>
 #include <Eigen/IterativeLinearSolvers>
+#include <Eigen/SparseQR>
 #include <cstdlib>
 #include <cmath>
 #include <ctime>
@@ -32,27 +33,36 @@ public:
     void setBeta(float beta) { this->beta = beta; }
     void setErrorThreshold(float threshold) { this->threshold = threshold; }
     void setMaximumNumberOfIterations(int maxIterations) { this->maxIterations = maxIterations; }
+	void setMaxLevel(int maxLevel) { this->maxLevel = maxLevel;  }
+	void setMethod(std::string method) { this->method = method; }
     void enableDebug() { this->isDebugEnabled = true; }
 
-    void runJacobi(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, bool chebyshevVariant);
-    void runGaussSeidel(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
+    void runMatrixFreeSolver(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols, std::string solverMethod);
     void runConjugateGradient(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runAMG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	void runLAHBPCG(unsigned char *depthImage, unsigned char *scribbleImage, unsigned char *grayImage, int rows, int cols);
 	
+	void computeWeights(unsigned char *grayImage, unsigned char *depthImage, int level, int rows, int cols);
+	void computePositions(int rows, int cols);
+	void computeEdges(unsigned char *depthImage, int rows, int cols);
+	float* getWeights() { return weights; }
+
 private:
 
-    void computeWeights(float *weights, unsigned char *grayImage, int rows, int cols);
-    void computePositions(int *positions, int rows, int cols);
-    float *image;
     cv::Mat debugImage;
-    int rows;
+	float *image;
+	float *weights;
+	int *positions;
+	int *edges; 
+	int rows;
     int cols;
     int maxIterations;
+	int maxLevel;
     float threshold;
     float beta;
     bool isDebugEnabled;
-
+	std::string method; 
+	
 };
 
 #endif 
