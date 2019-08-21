@@ -22,6 +22,8 @@ The software accepts as arguments:
 
 	-a: Annnotated image
 
+	--live: To enable live depth annotation
+
 Menu:
 
 	The solver trackbar enables runtime selection of a CPU-based or GPU-based solver
