@@ -1,9 +1,9 @@
-//#define VIENNACL_WITH_CUDA
+﻿//#define VIENNACL_WITH_CUDA
 //#define PARALUTION 
 //#define CUSP
 #define TILE_WIDTH 16
 
-#include "GPUSolver.h"
+#include "cuda/GPUSolver.h"
 #include <cmath>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
@@ -35,6 +35,7 @@
 //Global variables shared by the distinct solvers
 float **devicePreviousImage;
 float **deviceNextImage;
+float **deviceDepthImage;
 float **deviceError;
 int **devicehorizontalIndexToWeight;
 int **deviceverticalIndexToWeight;
@@ -58,6 +59,7 @@ void GPUAllocateDeviceMemory(int rows, int cols, int levels) {
 	
 	devicePreviousImage = (float**)malloc(sizeof(float*) * levels);
 	deviceNextImage = (float**)malloc(sizeof(float*) * levels);
+	deviceDepthImage = (float**)malloc(sizeof(float*) * levels);
 	deviceError = (float**)malloc(sizeof(float*) * levels);
 	devicehorizontalIndexToWeight = (int**)malloc(sizeof(int*) * levels);
 	deviceverticalIndexToWeight = (int**)malloc(sizeof(int*) * levels);
@@ -68,6 +70,7 @@ void GPUAllocateDeviceMemory(int rows, int cols, int levels) {
 		int colsPerLevel = cols / powf(2, level);
 		cudaMalloc((void**)&devicePreviousImage[level], sizeof(float) * rowsPerLevel * colsPerLevel);
 		cudaMalloc((void**)&deviceNextImage[level], sizeof(float) * rowsPerLevel * colsPerLevel);
+		cudaMalloc((void**)&deviceDepthImage[level], sizeof(float) * rowsPerLevel * colsPerLevel);
 		cudaMalloc((void**)&deviceError[level], sizeof(float) * rowsPerLevel * colsPerLevel);
 		cudaMalloc((void**)&devicehorizontalIndexToWeight[level], sizeof(int) * rowsPerLevel * colsPerLevel);
 		cudaMalloc((void**)&deviceverticalIndexToWeight[level], sizeof(int) * rowsPerLevel * colsPerLevel);
@@ -87,6 +90,7 @@ void GPUFreeDeviceMemory(int levels) {
 	for(int level = 0; level < levels; level++) {
 		cudaFree(devicePreviousImage[level]);
 		cudaFree(deviceNextImage[level]);
+		cudaFree(deviceDepthImage[level]);
 		cudaFree(deviceError[level]);
 		cudaFree(devicehorizontalIndexToWeight[level]);
 		cudaFree(deviceverticalIndexToWeight[level]);
@@ -129,48 +133,6 @@ __device__ float solveDiffusion(int left, int right, int up, int down, float *co
 
 }
 
-__global__ void convert(unsigned char *src, size_t srcPitch, float *dst, size_t dstPitch, int rows, int cols)
-{
-
-	const int x = blockDim.x * blockIdx.x + threadIdx.x;
-    const int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-	if(x >= cols || y >= rows) return;
-
-	float *dstRow = (float*)((char*)dst + y * dstPitch);
-	unsigned char *srcRow = src + y * srcPitch;
-	dstRow[x] = srcRow[x * 3 + 0];
-
-}
-
-__global__ void pyrDown(unsigned char *prevScribbleImage, size_t prevScribblePitch, unsigned char *prevEditedImage, size_t prevEditedPitch, 
-	int previousRows, int previousCols, unsigned char *currScribbleImage, size_t currScribblePitch, unsigned char *currEditedImage, 
-	size_t currEditedPitch, int currentRows, int currentCols)
-{
-	
-	const int x = blockDim.x * blockIdx.x + threadIdx.x;
-    const int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-	if(x >= currentCols || y >= currentRows) return;
-    int kernelSize = 2;
-    for(int py = 2 * y - kernelSize/2; py < 2 * y + kernelSize/2; py++) {
-		for(int px = 2 * x - kernelSize/2; px < 2 * x + kernelSize/2; px++) {
-			int pixel = py * previousCols + px;
-            if(pixel >= 0 && pixel < previousCols * previousRows) {
-				unsigned char *prevScribbleImageRow = prevScribbleImage + py * prevScribblePitch;
-				if(prevScribbleImageRow[px] == 255) {
-					unsigned char *currScribbleImageRow = currScribbleImage + y * currScribblePitch;
-					unsigned char *currEditedImageRow = currEditedImage + y * currEditedPitch;
-					unsigned char *prevEditedImageRow = prevEditedImage + py * prevEditedPitch;
-					currScribbleImageRow[x] = 255;
-                    currEditedImageRow[x * 3 + 0] =  prevEditedImageRow[px * 3 + 0];
-                }           
-			}
-        }
-    }
-	
-}
-
 __global__ void copyFromPinnedData(float *output, float *input, size_t inputPitch, int rows, int cols) 
 {
 	
@@ -199,43 +161,6 @@ __global__ void copyToPinnedData(float *output, float *input, size_t outputPitch
 
 }
 
-__global__ void detectEdges(int *edges, float *depthImage, size_t depthPitch, int rows, int cols)
-{
-
-	const int x = blockDim.x * blockIdx.x + threadIdx.x;
-    const int y = blockDim.y * blockIdx.y + threadIdx.y;
-
-	if(x >= cols || y >= rows) return;
-	
-	float *depthImageRow = (float*)((char*)depthImage + y * depthPitch);
-	float *depthImageRowMinus = (float*)((char*)depthImage + (y - 1) * depthPitch);
-	float *depthImageRowPlus = (float*)((char*)depthImage + (y + 1) * depthPitch);
-	
-	int tidx = threadIdx.x + 1;
-	int tidy = threadIdx.y + 1;
-	
-	__shared__ float sharedDepthImage[TILE_WIDTH + 2][TILE_WIDTH + 2];
-	sharedDepthImage[tidy][tidx] = depthImageRow[x];
-	if(tidx == 1) sharedDepthImage[tidy][0] = depthImageRow[x - 1];
-	if(tidx == TILE_WIDTH) sharedDepthImage[tidy][TILE_WIDTH + 1] = depthImageRow[x + 1];
-	if(tidy == 1) sharedDepthImage[0][tidx] = depthImageRowMinus[x];
-	if(tidy == TILE_WIDTH) sharedDepthImage[TILE_WIDTH + 1][tidx] = depthImageRowPlus[x];
-	__syncthreads();
-	
-	if(x == 0 || y == 0 || x == cols - 1 || y == rows - 1) edges[y * cols + x] = 0;
-
-	float center = sharedDepthImage[tidy][tidx];
-	float top = sharedDepthImage[tidy - 1][tidx];
-	float bottom = sharedDepthImage[tidy + 1][tidx];
-	float left = sharedDepthImage[tidy][tidx - 1];
-	float right = sharedDepthImage[tidy][tidx + 1];
-	
-	if (abs(center - top) > 4 || abs(center - bottom) > 4 || abs(center - left) > 4 || abs(center - right) > 4) edges[y * cols + x] = 255;
-	else edges[y * cols + x] = 0;
-
-}
-
-
 __global__ void loadIndexToWeight(unsigned char *grayImage, float *depthImage, int *edges, int *horizontalIndexToWeight, 
 	int *verticalIndexToWeight, size_t grayPitch, size_t depthPitch, int method, int level, int maxLevel, int rows, int cols)
 {
@@ -248,7 +173,7 @@ __global__ void loadIndexToWeight(unsigned char *grayImage, float *depthImage, i
 	unsigned char *grayImageRow = grayImage + y * grayPitch;
 	unsigned char *grayImageRowMinus = grayImage + (y - 1) * grayPitch;
 	unsigned char *grayImageRowPlus = grayImage + (y + 1) * grayPitch;
-
+	
 	float *depthImageRow = (float*)((char*)depthImage + y * depthPitch);
 	float *depthImageRowMinus = (float*)((char*)depthImage + (y - 1) * depthPitch);
 	float *depthImageRowPlus = (float*)((char*)depthImage + (y + 1) * depthPitch);
@@ -258,8 +183,7 @@ __global__ void loadIndexToWeight(unsigned char *grayImage, float *depthImage, i
 	
 	__shared__ unsigned char sharedGrayImage[TILE_WIDTH + 2][TILE_WIDTH + 2];
 	__shared__ unsigned char sharedDepthImage[TILE_WIDTH + 2][TILE_WIDTH + 2];
-	__shared__ unsigned char sharedEdges[TILE_WIDTH + 2][TILE_WIDTH + 2];
-
+	
 	sharedGrayImage[tidy][tidx] = grayImageRow[x];
 	if(tidx == 1) sharedGrayImage[tidy][0] = grayImageRow[x - 1];
 	if(tidx == TILE_WIDTH) sharedGrayImage[tidy][TILE_WIDTH + 1] = grayImageRow[x + 1];
@@ -274,65 +198,53 @@ __global__ void loadIndexToWeight(unsigned char *grayImage, float *depthImage, i
 		if(tidy == 1) sharedDepthImage[0][tidx] = depthImageRowMinus[x];
 		if(tidy == TILE_WIDTH) sharedDepthImage[TILE_WIDTH + 1][tidx] = depthImageRowPlus[x];
 	
-		sharedEdges[tidy][tidx] = edges[y * cols + x];
-		if(tidx == 1) sharedEdges[tidy][0] = edges[y * cols + x - 1];
-		if(tidx == TILE_WIDTH) sharedEdges[tidy][TILE_WIDTH + 1] = edges[y * cols + x + 1];
-		if(tidy == 1) sharedEdges[0][tidx] = edges[(y - 1) * cols + x];
-		if(tidy == TILE_WIDTH) sharedEdges[TILE_WIDTH + 1][tidx] = edges[(y + 1) * cols + x];
-	
 	}
-
+	
 	__syncthreads();
 	
 	int directions[4] = {257, 257, 257, 257};
 	
-	if(method == 0 || (method == 1 && level == maxLevel)) {
+	if(method == 0 || (method == 1 && (level == maxLevel))) {
 		
 		unsigned char grayIntensity = sharedGrayImage[tidy][tidx];
 		if(x - 1 >= 0) directions[0] = abs(grayIntensity - sharedGrayImage[tidy][tidx - 1]);
 		if(x + 1 < cols) directions[1] = abs(grayIntensity - sharedGrayImage[tidy][tidx + 1]);
 		if(y - 1 >= 0) directions[2] = abs(grayIntensity - sharedGrayImage[tidy - 1][tidx]);
 		if(y + 1 < rows) directions[3] = abs(grayIntensity - sharedGrayImage[tidy + 1][tidx]);
-	
-	} else if(method == 1 && level == 0) {
-	
-		unsigned char depthIntensity = sharedDepthImage[tidy][tidx];
-		if(x - 1 >= 0) directions[0] = abs(depthIntensity - sharedDepthImage[tidy][tidx - 1]);
-		if(x + 1 < cols) directions[1] = abs(depthIntensity - sharedDepthImage[tidy][tidx + 1]);
-		if(y - 1 >= 0) directions[2] = abs(depthIntensity - sharedDepthImage[tidy - 1][tidx]);
-		if(y + 1 < rows) directions[3] = abs(depthIntensity - sharedDepthImage[tidy + 1][tidx]);
-	
+		
 	} else {
 		
 		unsigned char grayIntensity = sharedGrayImage[tidy][tidx];
 		unsigned char depthIntensity = sharedDepthImage[tidy][tidx];
-		unsigned char edgeIntensity = sharedEdges[tidy][tidx];
+		int threshold = 4;
+		if(level == 0) threshold = 0;
 		if(x - 1 >= 0) {
-			if(edgeIntensity != 0 && sharedEdges[tidy][tidx - 1] != 0) directions[0] = abs(grayIntensity - sharedGrayImage[tidy][tidx - 1]);
-			else directions[0] = abs(depthIntensity - sharedDepthImage[tidy][tidx - 1]);
+			if((abs(depthIntensity - sharedDepthImage[tidy][tidx - 1]) > threshold)) directions[0] = abs(grayIntensity - sharedGrayImage[tidy][tidx - 1]);
+			else directions[0] = 0;
 		}
 		if(x + 1 < cols) {
-			if(edgeIntensity != 0 && sharedEdges[tidy][tidx + 1] != 0) directions[1] = abs(grayIntensity - sharedGrayImage[tidy][tidx + 1]);
-			else directions[1] = abs(depthIntensity - sharedDepthImage[tidy][tidx + 1]);
+			if((abs(depthIntensity - sharedDepthImage[tidy][tidx + 1]) > threshold)) directions[1] = abs(grayIntensity - sharedGrayImage[tidy][tidx + 1]);
+			else directions[1] = 0;
 		}
 		if(y - 1 >= 0) {
-			if(edgeIntensity != 0 && sharedEdges[tidy - 1][tidx] != 0) directions[2] = abs(grayIntensity - sharedGrayImage[tidy - 1][tidx]);
-			else directions[2] = abs(depthIntensity - sharedDepthImage[tidy - 1][tidx]);
+			if((abs(depthIntensity - sharedDepthImage[tidy - 1][tidx]) > threshold)) directions[2] = abs(grayIntensity - sharedGrayImage[tidy - 1][tidx]);
+			else directions[2] = 0;
 		}
 		if(y + 1 < rows) {
-			if(edgeIntensity != 0 && sharedEdges[tidy + 1][tidx] != 0) directions[3] = abs(grayIntensity - sharedGrayImage[tidy + 1][tidx]);
-			else directions[3] = abs(depthIntensity - sharedDepthImage[tidy + 1][tidx]);
+			if((abs(depthIntensity - sharedDepthImage[tidy + 1][tidx]) > threshold)) directions[3] = abs(grayIntensity - sharedGrayImage[tidy + 1][tidx]);
+			else directions[3] = 0;
 		}
 	
 	}
-
+	
 	horizontalIndexToWeight[y * cols + x] = directions[0] * 1000 + directions[1];
 	verticalIndexToWeight[y * cols + x] = directions[2] * 1000 + directions[3];
 
 }
 
-__global__ void matrixFreeSolver(float *input, int *horizontalIndexToWeight, int *verticalIndexToWeight, unsigned char *scribbleImage, float *error, size_t inputPitch, 
-	size_t scribblePitch, int rows, int cols, int solverCode, float *jacobiOutput = 0, float *chebyshevPreviousImage = 0, int GSColor = 0, float omega = 0, float gamma = 0) 
+__global__ void matrixFreeSolver(float *input, int *horizontalIndexToWeight, int *verticalIndexToWeight, unsigned char *scribbleImage, 
+	float *error, size_t inputPitch, size_t scribblePitch, int rows, int cols, int solverCode, float *jacobiOutput = 0, bool isDebugEnabled = false, 
+	float *chebyshevPreviousImage = 0, int GSColor = 0, float omega = 0, float gamma = 0) 
 {
 
 	const int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -345,20 +257,16 @@ __global__ void matrixFreeSolver(float *input, int *horizontalIndexToWeight, int
 	int tidy = threadIdx.y + 1;
 	
 	__shared__ float sharedImage[TILE_WIDTH + 2][TILE_WIDTH + 2];
-	float *inputRow = (float*)((char*)input + y * inputPitch);
-	float *inputRowMinus = (float*)((char*)input + (y - 1) * inputPitch);
-	float *inputRowPlus = (float*)((char*)input + (y + 1) * inputPitch);
-	sharedImage[tidy][tidx] = inputRow[x];
-	if(tidx == 1) sharedImage[tidy][0] = inputRow[x - 1];
-	if(tidx == TILE_WIDTH) sharedImage[tidy][TILE_WIDTH + 1] = inputRow[x + 1];
-	if(tidy == 1) sharedImage[0][tidx] = inputRowMinus[x];
-	if(tidy == TILE_WIDTH) sharedImage[TILE_WIDTH + 1][tidx] = inputRowPlus[x];
+	sharedImage[tidy][tidx] = input[pixel];
+	if (tidx == 1) sharedImage[tidy][0] = input[pixel - 1];
+	if (tidx == TILE_WIDTH) sharedImage[tidy][TILE_WIDTH + 1] = input[pixel + 1];
+	if (tidy == 1) sharedImage[0][tidx] = input[(y - 1) * cols + x];
+	if (tidy == TILE_WIDTH) sharedImage[TILE_WIDTH + 1][tidx] = input[(y + 1) * cols + x];
 	__syncthreads();
 	
 	unsigned char *scribbleImageRow = scribbleImage + y * scribblePitch;
 	if(scribbleImageRow[x] == 255) return;
 	if(abs((x % 2) - (y % 2)) != GSColor && solverCode == 2) return;
-	//if(iteration > 0 && level == 0 && error[pixel] == 0) return;
 
 	int index = horizontalIndexToWeight[pixel];
 	int left = index / 1000;
@@ -370,24 +278,25 @@ __global__ void matrixFreeSolver(float *input, int *horizontalIndexToWeight, int
 	float result = solveDiffusion(left, right, up, down, count, sharedImage, tidx, tidy);
 
 	//Jacobi = 0, Jacobi + Chebyshev = 1, Gauss-Seidel = 2 
-	if(count > 0) {
+	if(count[0] > 0) {
 		
 		if(solverCode == 0) {
 			jacobiOutput[pixel] = result;
 		} else if(solverCode == 1) {
 			float previousColor = chebyshevPreviousImage[pixel];
-			float inputData = inputRow[x];
+			float inputData = sharedImage[tidy][tidx];
 			jacobiOutput[pixel] = (omega * (gamma * (result - inputData) + inputData - previousColor)) + previousColor;
 			chebyshevPreviousImage[pixel] = inputData;
 		} else if(solverCode == 2) {
 			float depth = sharedImage[tidy][tidx];
-			inputRow[x] = omega * (result - depth) + depth;
+			input[pixel] = omega * (result - depth) + depth;
 		}
-		error[pixel] = abs(result - sharedImage[tidy][tidx]);
+
+		if(isDebugEnabled) error[pixel] = abs(result - sharedImage[tidy][tidx]);
 	
 	} else {
-	
-		error[pixel] = 0;
+		
+		if(isDebugEnabled) error[pixel] = 0;
 	
 	}
 
@@ -399,25 +308,6 @@ void GPULoadWeights(float beta) {
 	for(int w = 0; w < 256; w++) weights[w] = expf(-beta * w);
 	cudaMemcpyToSymbol(deviceWeights, weights, 256 * sizeof(float), 0, cudaMemcpyHostToDevice);
 	GPUCheckError("GPULoadWeights");
-
-}
-
-void GPUConvertToFloat(unsigned char *src, size_t srcPitch, float *dst, size_t dstPitch, int rows, int cols)
-{
-	dim3 threads(TILE_WIDTH, TILE_WIDTH);
-    dim3 grid(divUp(cols, threads.x), divUp(rows, threads.y));
-	convert<<<grid, threads>>>(src, srcPitch, dst, dstPitch, rows, cols);
-}
-
-void GPUPyrDownAnnotation(unsigned char *prevScribbleImage, size_t prevScribblePitch, unsigned char *prevEditedImage, size_t prevEditedPitch, 
-	int previousRows, int previousCols, unsigned char *currScribbleImage, size_t currScribblePitch, unsigned char *currEditedImage, 
-	size_t currEditedPitch, int currentRows, int currentCols)
-{
-
-	dim3 threads(TILE_WIDTH, TILE_WIDTH);
-    dim3 grid(divUp(currentCols, threads.x), divUp(currentRows, threads.y));
-	pyrDown<<<grid, threads>>>(prevScribbleImage, prevScribblePitch, prevEditedImage, prevEditedPitch, previousRows, previousCols, 
-		currScribbleImage, currScribblePitch, currEditedImage, currEditedPitch, currentRows, currentCols);
 
 }
 
@@ -437,21 +327,19 @@ void GPUMatrixFreeSolver(float *depthImage, size_t depthPitch, unsigned char *sc
 	float gamma = 0.99;
 
 	//Gauss-Seidel parameters
-	float theta = 1.9;
+	float theta = 1.5;
 	int maxColors = 2;
 
 	dim3 threads(TILE_WIDTH, TILE_WIDTH);
     dim3 grid(divUp(cols, threads.x), divUp(rows, threads.y));
 	
-	if(method == "Macedo" && level != maxLevel) 
-		detectEdges<<<grid, threads>>>(deviceEdges[level], depthImage, depthPitch, rows, cols);
-
 	if(solverName != "GPU-GaussSeidel") {
 		cudaMemset(devicePreviousImage[level], 0, rows * cols * sizeof(float));
 		copyFromPinnedData<<<grid, threads>>>(deviceNextImage[level], depthImage, depthPitch, rows, cols);
 	}
+	copyFromPinnedData<<<grid, threads>>>(deviceDepthImage[level], depthImage, depthPitch, rows, cols);
 	
-	int methodCode = (method == "Guo") ? 0 : 1;
+	int methodCode = (method == "Liao") ? 0 : 1;
 	loadIndexToWeight<<<grid, threads>>>(grayImage, depthImage, deviceEdges[level], devicehorizontalIndexToWeight[level], 
 		deviceverticalIndexToWeight[level], grayPitch, depthPitch, methodCode, level, maxLevel, rows, cols);
 	
@@ -459,36 +347,49 @@ void GPUMatrixFreeSolver(float *depthImage, size_t depthPitch, unsigned char *sc
 		
 		if(solverName == "GPU-Jacobi") {
 		
-			matrixFreeSolver<<<grid, threads>>>(depthImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
-				scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 0, deviceNextImage[level]);
-			copyToPinnedData<<<grid, threads>>>(depthImage, deviceNextImage[level], depthPitch, rows, cols);
-    
+			if (iteration % 2 == 0) {
+				matrixFreeSolver<<<grid, threads>>>(deviceDepthImage[level], devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
+					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 0, deviceNextImage[level], isDebugEnabled);
+			} else {
+				matrixFreeSolver<<<grid, threads>>>(deviceNextImage[level], devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
+					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 0, deviceDepthImage[level], isDebugEnabled);
+			}
+			
 		} else if(solverName == "GPU-Jacobi-Chebyshev") {
 
 			if (iteration < S) omega = 1;
 			else if (iteration == S) omega = 2.0 / (2.0 - rho * rho);
 			else omega = 4.0 / (4.0 - rho * rho * omega);
 
-			matrixFreeSolver<<<grid, threads>>>(depthImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
-				scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 1, deviceNextImage[level], devicePreviousImage[level], 0, omega, gamma);
-			copyToPinnedData<<<grid, threads>>>(depthImage, deviceNextImage[level], depthPitch, rows, cols);
-    	
+			if (iteration % 2 == 0) {
+				matrixFreeSolver << <grid, threads >> > (deviceDepthImage[level], devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level],
+					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 1, deviceNextImage[level], isDebugEnabled,
+					devicePreviousImage[level], 0, omega, gamma);
+			} else {
+				matrixFreeSolver << <grid, threads >> > (deviceNextImage[level], devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level],
+					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 1, deviceDepthImage[level], isDebugEnabled,
+					devicePreviousImage[level], 0, omega, gamma);
+			}
+			
 		} else {
 
 			for(int color = 0; color < maxColors; color++)
-				matrixFreeSolver<<<grid, threads>>>(depthImage, devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
-					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 2, 0, 0, color, theta, 0);
+				matrixFreeSolver<<<grid, threads>>>(deviceDepthImage[level], devicehorizontalIndexToWeight[level], deviceverticalIndexToWeight[level], 
+					scribbleImage, deviceError[level], depthPitch, scribblePitch, rows, cols, 2, 0, isDebugEnabled, 0, color, theta, 0);
 		
 		} 
-			
-		if(iteration % 100 == 0) {
+		
+		if(iteration % 100 == 0 && isDebugEnabled) {
 			thrust::device_ptr<float> tptr = thrust::device_pointer_cast(deviceError[level]);
 			error = thrust::reduce(tptr, tptr + rows * cols)/(rows * cols);
 			if(error < tolerance) break;
 		}
 		
 	}
-
+	
+	if((iteration - 1) % 2 == 0 || solverName == "GPU-GaussSeidel") copyToPinnedData <<<grid, threads >>>(depthImage, deviceDepthImage[level], depthPitch, rows, cols);
+	else copyToPinnedData <<<grid, threads >>>(depthImage, deviceNextImage[level], depthPitch, rows, cols);
+	
 	if (isDebugEnabled) std::cout << "Iterations: " << iteration << " | Error: " << error << std::endl;
 
 }

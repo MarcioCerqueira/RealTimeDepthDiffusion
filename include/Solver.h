@@ -44,7 +44,6 @@ public:
 	
 	void computeWeights(unsigned char *grayImage, unsigned char *depthImage, int level, int rows, int cols);
 	void computePositions(int rows, int cols);
-	void computeEdges(unsigned char *depthImage, int rows, int cols);
 	float* getWeights() { return weights; }
 
 private:
@@ -53,7 +52,6 @@ private:
 	float *image;
 	float *weights;
 	int *positions;
-	int *edges; 
 	int rows;
     int cols;
     int maxIterations;

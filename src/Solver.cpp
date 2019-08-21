@@ -11,7 +11,6 @@ Solver::Solver(int rows, int cols)
     debugImage = cv::Mat::zeros(cv::Size(cols, rows), CV_8UC1); 
 	weights = (float*)malloc(rows * cols * 4 * sizeof(float));
 	positions = (int*)malloc(rows * cols * 4 * sizeof(int));
-	edges = (int*)malloc(rows * cols * sizeof(int));
 	
 }
 
@@ -21,7 +20,6 @@ Solver::~Solver()
 	delete [] image;
 	delete [] weights;
 	delete [] positions;
-	delete [] edges;
 
 }
 
@@ -40,7 +38,7 @@ void Solver::runMatrixFreeSolver(unsigned char *depthImage, unsigned char *scrib
 	float rho = 0.99;
 	float gamma = 0.99;
 	//Parameter for Gauss-Seidel
-	float theta = 1.9;
+	float theta = 1.5;
 
 	for (int pixel = 0; pixel < rows * cols; pixel++) {
 		image[pixel] = depthImage[pixel];
@@ -298,26 +296,22 @@ void Solver::computeWeights(unsigned char *grayImage, unsigned char *depthImage,
 
 			int pixel = y * cols + x;
 
-			if (method == "Guo" || (method == "Macedo" && level == maxLevel)) {
+			if (method == "Liao" || (method == "Macedo" && level == maxLevel)) {
 			
 				for (int neighbour = 0; neighbour < 4; neighbour++)
 					if (positions[pixel * 4 + neighbour] != -1)
 						weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[pixel * 4 + neighbour]]));
 			
-			} else if (method == "Macedo" && level != 0) {
-
-				for (int neighbour = 0; neighbour < 4; neighbour++) {
-					if (positions[pixel * 4 + neighbour] != -1) {
-						if (edges[pixel] != 0 && edges[positions[pixel * 4 + neighbour]] != 0) weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[pixel * 4 + neighbour]]));
-						else weights[pixel * 4 + neighbour] = expf(-beta * fabs(depthImage[pixel] - depthImage[positions[pixel * 4 + neighbour]]));
-					}
-				}
-
 			} else {
 
-				for (int neighbour = 0; neighbour < 4; neighbour++)
-					if (positions[pixel * 4 + neighbour] != -1)
-						weights[pixel * 4 + neighbour] = expf(-beta * fabs(depthImage[pixel] - depthImage[positions[pixel * 4 + neighbour]]));
+				int threshold = 4;
+				if (level == 0) threshold = 0;
+				for (int neighbour = 0; neighbour < 4; neighbour++) {
+					if (positions[pixel * 4 + neighbour] != -1) {
+						if (abs(depthImage[pixel] - depthImage[positions[pixel * 4 + neighbour]]) > threshold) weights[pixel * 4 + neighbour] = expf(-beta * fabs(grayImage[pixel] - grayImage[positions[pixel * 4 + neighbour]]));
+						else weights[pixel * 4 + neighbour] = 1;
+					}
+				}
 
 			}
 
@@ -343,28 +337,5 @@ void Solver::computePositions(int rows, int cols)
 
         }
     }
-
-}
-
-void Solver::computeEdges(unsigned char *depthImage, int rows, int cols)
-{
-
-	for (int pixel = 0; pixel < rows * cols; pixel++)
-		edges[pixel] = 0;
-
-	for (int x = 1; x < cols - 1; x++) {
-		for (int y = 1; y < rows - 1; y++) {
-
-			int center = depthImage[y * cols + x];
-			int top = depthImage[(y - 1) * cols + x];
-			int bottom = depthImage[(y + 1) * cols + x];
-			int left = depthImage[y * cols + x - 1];
-			int right = depthImage[y * cols + x + 1];
-
-			if (abs(center - top) > 4 || abs(center - bottom) > 4 || abs(center - left) > 4 || abs(center - right) > 4) edges[y * cols + x] = 255;
-			else edges[y * cols + x] = 0;
-
-		}
-	}
 
 }
