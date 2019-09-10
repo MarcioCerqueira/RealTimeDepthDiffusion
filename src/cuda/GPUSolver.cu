@@ -104,32 +104,33 @@ void GPUFreeDeviceMemory(int levels) {
 
 }
 
-__device__ float solveDiffusion(int left, int right, int up, int down, float *count, float sharedImage[][TILE_WIDTH + 2], int tidx, int tidy) {
+__device__ float solveDiffusion(int left, int right, int up, int down, float sharedImage[][TILE_WIDTH + 2], int tidx, int tidy) {
 
-	count[0] = 0;
+	float count = 0;
 	float weight = 0;
 	float sum = 0;
 	if (left < 256) {
 		weight = deviceWeights[left];
 		sum += weight * sharedImage[tidy][tidx - 1];
-		count[0] += weight;
+		count += weight;
 	}
 	if (right < 256) {
 		weight = deviceWeights[right];
 		sum += weight * sharedImage[tidy][tidx + 1];
-		count[0] += weight;
+		count += weight;
 	}
 	if (up < 256) {
 		weight = deviceWeights[up];
 		sum += weight * sharedImage[tidy - 1][tidx];
-		count[0] += weight;
+		count += weight;
 	}
 	if (down < 256) {
 		weight = deviceWeights[down];
 		sum += weight * sharedImage[tidy + 1][tidx];
-		count[0] += weight;
+		count += weight;
 	}
-	return sum / count[0];
+
+	return min(max(sum / count, 0.0), 255.0);
 
 }
 
@@ -274,31 +275,23 @@ __global__ void matrixFreeSolver(float *input, int *horizontalIndexToWeight, int
 	index = verticalIndexToWeight[pixel];
 	int up = index / 1000;
 	int down = index % 1000;
-	float count[1];
-	float result = solveDiffusion(left, right, up, down, count, sharedImage, tidx, tidy);
+	float result = solveDiffusion(left, right, up, down, sharedImage, tidx, tidy);
 
 	//Jacobi = 0, Jacobi + Chebyshev = 1, Gauss-Seidel = 2 
-	if(count[0] > 0) {
-		
-		if(solverCode == 0) {
-			jacobiOutput[pixel] = result;
-		} else if(solverCode == 1) {
-			float previousColor = chebyshevPreviousImage[pixel];
-			float inputData = sharedImage[tidy][tidx];
-			jacobiOutput[pixel] = (omega * (gamma * (result - inputData) + inputData - previousColor)) + previousColor;
-			chebyshevPreviousImage[pixel] = inputData;
-		} else if(solverCode == 2) {
-			float depth = sharedImage[tidy][tidx];
-			input[pixel] = omega * (result - depth) + depth;
-		}
-
-		if(isDebugEnabled) error[pixel] = abs(result - sharedImage[tidy][tidx]);
-	
-	} else {
-		
-		if(isDebugEnabled) error[pixel] = 0;
-	
+	if(solverCode == 0) {
+		jacobiOutput[pixel] = result;
+	} else if(solverCode == 1) {
+		float previousColor = chebyshevPreviousImage[pixel];
+		float inputData = sharedImage[tidy][tidx];
+		jacobiOutput[pixel] = (omega * (gamma * (result - inputData) + inputData - previousColor)) + previousColor;
+		chebyshevPreviousImage[pixel] = inputData;
+	} else if(solverCode == 2) {
+		float depth = sharedImage[tidy][tidx];
+		input[pixel] = omega * (result - depth) + depth;
 	}
+
+	if(isDebugEnabled) error[pixel] = abs(result - sharedImage[tidy][tidx]);
+	
 
 }
 
@@ -387,7 +380,7 @@ void GPUMatrixFreeSolver(float *depthImage, size_t depthPitch, unsigned char *sc
 		
 	}
 	
-	if((iteration - 1) % 2 == 0 || solverName == "GPU-GaussSeidel") copyToPinnedData <<<grid, threads >>>(depthImage, deviceDepthImage[level], depthPitch, rows, cols);
+	if((iteration - 1) % 2 == 1 || solverName == "GPU-GaussSeidel") copyToPinnedData <<<grid, threads >>>(depthImage, deviceDepthImage[level], depthPitch, rows, cols);
 	else copyToPinnedData <<<grid, threads >>>(depthImage, deviceNextImage[level], depthPitch, rows, cols);
 	
 	if (isDebugEnabled) std::cout << "Iterations: " << iteration << " | Error: " << error << std::endl;

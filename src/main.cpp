@@ -226,16 +226,18 @@ int main(int argc, const char *argv[])
     }
 #ifdef OPENCV_WITH_CUDA
 	//Initialize device variables
-	cv::Mat floatDepthImage = cv::Mat(cv::Size(originalImage.cols, originalImage.rows), CV_32FC1);
+	resetDevice();
 	GpuMat deviceUCDepthImage = GpuMat(cv::Size(originalImage.cols, originalImage.rows), CV_8UC1);
 	GpuMat deviceOriginalImage = GpuMat(originalImage);
 	GpuMat deviceArtisticImage = GpuMat(cv::Size(originalImage.cols, originalImage.rows), CV_8UC3);
 	std::vector<GpuMat> deviceGrayImage;
 	std::vector<GpuMat> deviceDepthImage;
+	std::vector<cv::Mat> floatDepthImage;
 	deviceEditedImage.resize(pyrLevels);
 	deviceScribbleImage.resize(pyrLevels);
 	deviceDepthImage.resize(pyrLevels);
 	deviceGrayImage.resize(pyrLevels);
+	floatDepthImage.resize(pyrLevels);
 	for (int level = 0; level < pyrLevels; level++) {
 		cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
 		deviceEditedImage[level] = GpuMat(pyrSize, CV_8UC3); 
@@ -245,6 +247,7 @@ int main(int argc, const char *argv[])
 		deviceGrayImage[level] = GpuMat(pyrSize, CV_8UC1);
 		deviceDepthImage[level] = GpuMat(pyrSize, CV_32FC1);
 		deviceDepthImage[level].setTo(cv::Scalar(255));
+		floatDepthImage[level] = cv::Mat(pyrSize, CV_32FC1);
 		if (level == 0) cv::gpu::cvtColor(deviceOriginalImage, deviceGrayImage[0], cv::COLOR_BGR2GRAY);
 		else {
 		if (((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
@@ -388,18 +391,19 @@ int main(int argc, const char *argv[])
 
 					int CUDAIteration = maxIterations / powf(2.0, (pyrLevels - 1) - level);
 					float CUDAThreshold = 1e-5;
+
 					GPUMatrixFreeSolver(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
 						deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, depthImage[level].rows,
 						depthImage[level].cols, beta, CUDAIteration, CUDAThreshold, solverName, method, level, isDebugEnabled);
-
+				
 					if (level > 0) {
 						
-						if(deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols)
+						if (deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols) {
 							cv::gpu::pyrUp(deviceDepthImage[level], deviceDepthImage[level - 1]);
-						else {
-							deviceDepthImage[level].download(floatDepthImage);
-							cv::pyrUp(floatDepthImage, floatDepthImage, depthImage[level - 1].size());
-							deviceDepthImage[level - 1].upload(floatDepthImage);
+						} else {
+							deviceDepthImage[level].download(floatDepthImage[level]);
+							cv::pyrUp(floatDepthImage[level], floatDepthImage[level - 1], deviceDepthImage[level - 1].size());
+							deviceDepthImage[level - 1].upload(floatDepthImage[level - 1]);
 						}
 						
 					}
@@ -517,6 +521,22 @@ int main(int argc, const char *argv[])
 			cv::imwrite("A.png", imageToSave);
 
 		}
+		/*
+		if (key == 'p' || key == 'P') {
+
+			cv::imshow("P1", grayImage[0]);
+			cv::imshow("P2", grayImage[1]);
+			cv::imshow("P3", grayImage[2]);
+			cv::imshow("P4", grayImage[3]);
+			
+			cv::imshow("D1", depthImage[0]);
+			cv::imshow("D2", depthImage[1]);
+			cv::imshow("D3", depthImage[2]);
+			cv::imshow("D4", depthImage[3]);
+
+		
+		}
+		*/
 
 		if (key == 'm' || key == 'M') {
 
