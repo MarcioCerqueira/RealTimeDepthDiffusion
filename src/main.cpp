@@ -206,7 +206,7 @@ int main(int argc, const char *argv[])
 	cv::Mat originalImage = cv::imread(inputFileName);
 	DepthEffect depthEffect(originalImage.rows, originalImage.cols);
 	int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 45, 1)) + 1;
-    std::vector<cv::Mat> depthImage;
+	std::vector<cv::Mat> depthImage;
     std::vector<cv::Mat> grayImage;
     editedImage.resize(pyrLevels);
     scribbleImage.resize(pyrLevels);
@@ -521,22 +521,45 @@ int main(int argc, const char *argv[])
 			cv::imwrite("A.png", imageToSave);
 
 		}
-		/*
-		if (key == 'p' || key == 'P') {
-
-			cv::imshow("P1", grayImage[0]);
-			cv::imshow("P2", grayImage[1]);
-			cv::imshow("P3", grayImage[2]);
-			cv::imshow("P4", grayImage[3]);
-			
-			cv::imshow("D1", depthImage[0]);
-			cv::imshow("D2", depthImage[1]);
-			cv::imshow("D3", depthImage[2]);
-			cv::imshow("D4", depthImage[3]);
-
 		
+		
+		if (key == 'p' || key == 'P') {
+			
+			
+			
+			/*
+			std::string grayNames[] = { "G1.jpg", "G2.jpg", "G3.jpg", "G4.jpg", "G5.jpg", "G6.jpg" };
+			std::string depthNames[] = { "D1.jpg", "D2.jpg", "D3.jpg", "D4.jpg", "D5.jpg", "D6.jpg" };
+			std::string editedNames[] = { "A1.jpg", "A2.jpg", "A3.jpg", "A4.jpg", "A5.jpg", "A6.jpg" };
+			for (int level = 0; level < pyrLevels; level++) {
+				for (int y = 0; y < depthImage[level].rows; y++) {
+					for (int x = 0; x < depthImage[level].cols; x++) {
+
+						int pixel = y * depthImage[level].cols + x;
+						int threshold = 4;
+						if (level == 0) threshold = 4;
+						grayImage[level].ptr<unsigned char>()[pixel] = 0;
+						if (x == 0 || y == 0 || x == depthImage[level].cols - 1 || y == depthImage[level].rows - 1) continue;
+						if (abs(depthImage[level].ptr<unsigned char>()[pixel] - depthImage[level].ptr<unsigned char>()[(y - 1) * depthImage[level].cols + x]) > threshold) grayImage[level].ptr<unsigned char>()[pixel] = 255;
+						if (abs(depthImage[level].ptr<unsigned char>()[pixel] - depthImage[level].ptr<unsigned char>()[(y + 1) * depthImage[level].cols + x]) > threshold) grayImage[level].ptr<unsigned char>()[pixel] = 255;
+						if (abs(depthImage[level].ptr<unsigned char>()[pixel] - depthImage[level].ptr<unsigned char>()[y * depthImage[level].cols + x + 1]) > threshold) grayImage[level].ptr<unsigned char>()[pixel] = 255;
+						if (abs(depthImage[level].ptr<unsigned char>()[pixel] - depthImage[level].ptr<unsigned char>()[y * depthImage[level].cols + x - 1]) > threshold) grayImage[level].ptr<unsigned char>()[pixel] = 255;
+
+					}
+				}
+			}
+			for (int level = 0; level < pyrLevels; level++) {
+				
+				//cv::blur(grayImage[level], grayImage[level], cv::Size(3, 3));
+				//cv::Canny(grayImage[level], grayImage[level], 128, 192);
+				cv::imwrite(editedNames[level], grayImage[level]);
+				//cv::imwrite(depthNames[level], depthImage[level]);
+			}
+			*/
+			
+
 		}
-		*/
+		
 
 		if (key == 'm' || key == 'M') {
 
