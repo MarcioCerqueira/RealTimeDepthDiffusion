@@ -180,24 +180,27 @@ void trackbarEvent(int code, void* )
 int main(int argc, const char *argv[])
 {
 
-    if(argc == 1) {
-        std::cout << "Usage: DepthDiffusion -i ImageFile.Extension" << std::endl;
-        return 0;
-    }
+	if (argc == 1) {
+		std::cout << "Usage: DepthDiffusion -i ImageFile.Extension" << std::endl;
+		return 0;
+	}
 
 	//Read arguments
 	std::string inputFileName, annotatedFileName;
 	int solverCode = 7;
 	std::string method = "Liao";
 	bool live = false;
+	bool datasetYuan = false;
 	bool artisticRendering = false;
-	for(int argument = 1; argument < argc; argument++) {
+	for (int argument = 1; argument < argc; argument++) {
 		if (!strcmp(argv[argument], "-i"))
 			inputFileName.assign(argv[argument + 1]);
 		else if (!strcmp(argv[argument], "-a"))
 			annotatedFileName.assign(argv[argument + 1]);
 		else if (!strcmp(argv[argument], "--live"))
 			live = true;
+		else if (!strcmp(argv[argument], "--datasetYuan"))
+			datasetYuan = true;
 		else if (!strcmp(argv[argument], "-h"))
 			std::cout << "Usage:\n -i input image\n -a annotated image\n";
 	}
@@ -207,23 +210,23 @@ int main(int argc, const char *argv[])
 	DepthEffect depthEffect(originalImage.rows, originalImage.cols);
 	int pyrLevels = log2(std::max(std::min(originalImage.cols, originalImage.rows) / 45, 1)) + 1;
 	std::vector<cv::Mat> depthImage;
-    std::vector<cv::Mat> grayImage;
-    editedImage.resize(pyrLevels);
-    scribbleImage.resize(pyrLevels);
-    depthImage.resize(pyrLevels);
-    grayImage.resize(pyrLevels);
-    for(int level = 0; level < pyrLevels; level++) {
-        cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
-        editedImage[level] = cv::Mat::zeros(pyrSize, CV_8UC3);
+	std::vector<cv::Mat> grayImage;
+	editedImage.resize(pyrLevels);
+	scribbleImage.resize(pyrLevels);
+	depthImage.resize(pyrLevels);
+	grayImage.resize(pyrLevels);
+	for (int level = 0; level < pyrLevels; level++) {
+		cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
+		editedImage[level] = cv::Mat::zeros(pyrSize, CV_8UC3);
 		editedImage[level].setTo(cv::Scalar(0));
 		scribbleImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
 		scribbleImage[level].setTo(cv::Scalar(0));
 		depthImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
 		depthImage[level].setTo(cv::Scalar(255));
-        grayImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
+		grayImage[level] = cv::Mat::zeros(pyrSize, CV_8UC1);
 		if (level == 0) cv::cvtColor(originalImage, grayImage[0], cv::COLOR_BGR2GRAY);
 		else cv::pyrDown(grayImage[level - 1], grayImage[level]);
-    }
+	}
 #ifdef OPENCV_WITH_CUDA
 	//Initialize device variables
 	resetDevice();
@@ -240,7 +243,7 @@ int main(int argc, const char *argv[])
 	floatDepthImage.resize(pyrLevels);
 	for (int level = 0; level < pyrLevels; level++) {
 		cv::Size pyrSize = cv::Size(originalImage.cols / powf(2, level), originalImage.rows / powf(2, level));
-		deviceEditedImage[level] = GpuMat(pyrSize, CV_8UC3); 
+		deviceEditedImage[level] = GpuMat(pyrSize, CV_8UC3);
 		deviceEditedImage[level].setTo(cv::Scalar(0));
 		deviceScribbleImage[level] = GpuMat(pyrSize, CV_8UC1);
 		deviceScribbleImage[level].setTo(cv::Scalar(0));
@@ -250,7 +253,7 @@ int main(int argc, const char *argv[])
 		floatDepthImage[level] = cv::Mat(pyrSize, CV_32FC1);
 		if (level == 0) cv::gpu::cvtColor(deviceOriginalImage, deviceGrayImage[0], cv::COLOR_BGR2GRAY);
 		else {
-		if (((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
+			if (((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
 				cv::gpu::pyrDown(deviceGrayImage[level - 1], deviceGrayImage[level]);
 			else {
 				deviceGrayImage[level - 1].download(grayImage[level - 1]);
@@ -268,17 +271,30 @@ int main(int argc, const char *argv[])
 	bool isDebugEnabled = false;
 	scribbleRadius = std::min(originalImage.rows, originalImage.cols) * 0.02;
 	Solver *solver = new Solver(originalImage.rows, originalImage.cols);
-    solver->setBeta(beta);
-    solver->setErrorThreshold(tolerance);
-    solver->setMaximumNumberOfIterations(maxIterations);
+	solver->setBeta(beta);
+	solver->setErrorThreshold(tolerance);
+	solver->setMaximumNumberOfIterations(maxIterations);
 	solver->setMaxLevel(pyrLevels - 1);
-	if(isDebugEnabled) solver->enableDebug();
+	if (isDebugEnabled) solver->enableDebug();
 #ifdef OPENCV_WITH_CUDA
 	GPULoadWeights(beta);
 #endif
 	//Load supplementary images (if any)
-    editedImage[0] = cv::imread(inputFileName);
-    if(annotatedFileName.size() > 1) {
+	if (datasetYuan) {
+		scribbleImage[0] = cv::imread(annotatedFileName + "\mask.png", 0);
+		editedImage[0] = cv::imread(annotatedFileName + "\strokes.png");
+		for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
+			if (scribbleImage[0].ptr<unsigned char>()[pixel] != 255)
+				for (int ch = 0; ch < 3; ch++)
+					editedImage[0].ptr<unsigned char>()[pixel * 3 + ch] = originalImage.ptr<unsigned char>()[pixel * 3 + ch];
+		}
+
+	}
+	else {
+		editedImage[0] = cv::imread(inputFileName);
+	}
+
+	if (annotatedFileName.size() > 1 && !datasetYuan) {
         scribbleImage[0] = cv::imread(annotatedFileName, 0);
 		for (int pixel = 0; pixel < editedImage[0].rows * editedImage[0].cols; pixel++) {
 			if (scribbleImage[0].ptr<unsigned char>()[pixel] != 32) {
@@ -340,6 +356,8 @@ int main(int argc, const char *argv[])
 			std::cout << "GPU module not supported (OpenCV's GPU support is required)" << std::endl;
 #endif
 		} else {
+
+
 			if (key == 'b' || key == 'B') {
 				std::cout << "Defocusing image..." << std::endl;
 				depthEffect.simulateDefocus(originalImage, depthImage[0]);
@@ -406,6 +424,10 @@ int main(int argc, const char *argv[])
 							deviceDepthImage[level - 1].upload(floatDepthImage[level - 1]);
 						}
 						
+						GPUConvertToFloat(deviceEditedImage[level - 1].ptr(), deviceEditedImage[level - 1].step,
+							deviceDepthImage[level - 1].ptr<float>(), deviceDepthImage[level - 1].step, deviceScribbleImage[level - 1].ptr(),
+							deviceScribbleImage[level - 1].step, deviceEditedImage[level - 1].rows, deviceEditedImage[level - 1].cols);
+
 					}
 
 				}
@@ -448,7 +470,7 @@ int main(int argc, const char *argv[])
 					for (int level = pyrLevels - 1; level >= 0; level--) {
 
 						if (method == "Macedo") {
-							solver->setMaximumNumberOfIterations(1000 / powf(2.0, (pyrLevels - 1) - level));
+							solver->setMaximumNumberOfIterations(maxIterations / powf(2.0, (pyrLevels - 1) - level));
 							solver->setErrorThreshold(1e-5);
 						}
 						else {
@@ -482,8 +504,12 @@ int main(int argc, const char *argv[])
 								grayImage[level].ptr<unsigned char>(), solver->getWeights(), depthImage[level].rows, depthImage[level].cols, 
 								beta, maxIterations, tolerance);
 
-						if (level > 0) cv::pyrUp(depthImage[level], depthImage[level - 1], depthImage[level - 1].size());
-
+						if (level > 0) {
+							cv::pyrUp(depthImage[level], depthImage[level - 1], depthImage[level - 1].size());
+							for (int pixel = 0; pixel < editedImage[level - 1].rows * editedImage[level - 1].cols; pixel++) {
+								if (scribbleImage[level - 1].ptr<unsigned char>()[pixel] == 255) depthImage[level - 1].ptr<unsigned char>()[pixel] = editedImage[level - 1].ptr<unsigned char>()[pixel * 3 + 0];
+							}
+						}
 						
 					}
 
@@ -519,19 +545,61 @@ int main(int argc, const char *argv[])
 					imageToSave.ptr<unsigned char>()[pixel * 3 + ch] = depthImage[0].ptr<unsigned char>()[pixel];
 			}
 			cv::imwrite("A.png", imageToSave);
-
+			cv::imwrite("B.png", editedImage[0]);
 		}
 		
+		if (key == '-') {
+			scribbleRadius -= 2;
+			std::cout << "Scribble Radius: " << scribbleRadius << std::endl;
+		}
+
+		if (key == '+') {
+			scribbleRadius += 2;
+			std::cout << "Scribble Radius: " << scribbleRadius << std::endl;
+		}
 		
 		if (key == 'p' || key == 'P') {
 			
 			
+			std::string originalP, depthP;
+			int opa, inv;
+			std::cout << "Original Image" << std::endl;
+			std::cin >> originalP;
+			std::cout << "Depth Image" << std::endl;
+			std::cin >> depthP;
+			std::cout << "Desat(1), Haze(2), Defocus(3)" << std::endl;
+			std::cin >> opa;
+			std::cout << "Inverted Depth (1-sim, 2-nao)" << std::endl;
+			std::cin >> inv;
+			cv::Mat A = cv::imread(originalP);
+			cv::Mat B = cv::imread(depthP, 0);
+			cv::Mat C = cv::imread(depthP, 0);
+			cv::cvtColor(A, C, CV_BGR2GRAY);
+
+			if (inv == 1) {
+				for (int pixel = 0; pixel < B.rows * B.cols; pixel++)
+					B.ptr<unsigned char>()[pixel] = 255 - B.ptr<unsigned char>()[pixel];
+			}
+			DepthEffect depthEffect2(A.rows, A.cols);
+			if(opa == 1) depthEffect2.simulateDesaturation(A, C, B);
+			else if (opa == 2) depthEffect2.simulateHaze(A, B);
+			else depthEffect2.simulateDefocus(A, B);
+			cv::imwrite("Artistic.png", depthEffect2.getArtisticImage());
+			//cv::imwrite("Monkaa.jpg", B);
 			
 			/*
+			cv::imwrite("O.jpg", originalImage);
+			cv::imwrite("D.jpg", depthImage[0]);
+			cv::imwrite("E.jpg", editedImage[0]);
+			cv::imwrite("A.jpg", depthEffect.getArtisticImage());
+			
 			std::string grayNames[] = { "G1.jpg", "G2.jpg", "G3.jpg", "G4.jpg", "G5.jpg", "G6.jpg" };
 			std::string depthNames[] = { "D1.jpg", "D2.jpg", "D3.jpg", "D4.jpg", "D5.jpg", "D6.jpg" };
 			std::string editedNames[] = { "A1.jpg", "A2.jpg", "A3.jpg", "A4.jpg", "A5.jpg", "A6.jpg" };
+			
+			
 			for (int level = 0; level < pyrLevels; level++) {
+				deviceDepthImage[level].download(floatDepthImage[level]);
 				for (int y = 0; y < depthImage[level].rows; y++) {
 					for (int x = 0; x < depthImage[level].cols; x++) {
 
@@ -548,14 +616,32 @@ int main(int argc, const char *argv[])
 					}
 				}
 			}
+			
+			std::vector<cv::Mat> tempImage;
+			tempImage.resize(pyrLevels);
+			tempImage[0] = originalImage.clone();
+
 			for (int level = 0; level < pyrLevels; level++) {
 				
+				/*
+				if(level < pyrLevels - 1) cv::pyrDown(tempImage[level], tempImage[level + 1]);
+
+				for (int pixel = 0; pixel < editedImage[level].rows * editedImage[level].cols; pixel++) {
+					if (scribbleImage[level].ptr<unsigned char>()[pixel] != 255)
+						for (int ch = 0; ch < 3; ch++)
+							editedImage[level].ptr<unsigned char>()[pixel * 3 + ch] = tempImage[level].ptr<unsigned char>()[pixel * 3 + ch];
+				}
+				*/ 
 				//cv::blur(grayImage[level], grayImage[level], cv::Size(3, 3));
 				//cv::Canny(grayImage[level], grayImage[level], 128, 192);
-				cv::imwrite(editedNames[level], grayImage[level]);
+
+				//cv::imwrite(editedNames[level], editedImage[level]);
 				//cv::imwrite(depthNames[level], depthImage[level]);
-			}
-			*/
+				//cv::imwrite(grayNames[level], grayImage[level]);
+
+
+			//}
+			
 			
 
 		}

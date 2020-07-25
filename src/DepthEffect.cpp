@@ -21,7 +21,7 @@ void DepthEffect::simulateDefocus(cv::Mat originalImage, cv::Mat depthImage)
 			for (int px = x - anisotropicKernelSize / 2; px < x + anisotropicKernelSize / 2; px++) {
 
 				int kernelPixel = py * originalImage.cols + px;
-				if (kernelPixel >= 0 && kernelPixel < originalImage.cols * originalImage.rows) {
+				if (px >= 0 && py >= 0 && px < originalImage.cols && py < originalImage.rows) {
 
 					for (int channel = 0; channel < originalImage.channels(); channel++)
 						sum[channel] += originalImage.ptr<unsigned char>()[kernelPixel * 3 + channel];
