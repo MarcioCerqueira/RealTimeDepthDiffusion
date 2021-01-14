@@ -18,6 +18,7 @@ References:
 #include "cuda/GPUImageProcessing.h"
 #include <vector>
 #include <opencv2/opencv.hpp>
+#include <thread>
 #ifdef OPENCV_WITH_CUDA
 	#include <opencv2/gpu/gpu.hpp>
 	using namespace cv::gpu;
@@ -177,6 +178,98 @@ void trackbarEvent(int code, void* )
 
 }
 
+bool haze = false;
+bool refocus = false;
+bool desaturation = false;
+bool artisticRendering = false;
+/*
+void teste(std::vector<GpuMat>& deviceGrayImage, std::vector<GpuMat>& deviceDepthImage, std::vector<GpuMat>& deviceEditedImage,
+	std::vector<cv::Mat>& grayImage, std::vector<cv::Mat>& depthImage, std::vector<cv::Mat>& floatDepthImage, GpuMat& deviceUCDepthImage, 
+	GpuMat& deviceOriginalImage, GpuMat& deviceArtisticImage, DepthEffect *depthEffect, int pyrLevels, int maxIterations, float beta, std::string method, bool isDebugEnabled)
+{
+
+	for (int t = 0; t < 10000; t++) {
+
+		deviceScribbleImage[0].upload(scribbleImage[0]);
+		deviceEditedImage[0].upload(editedImage[0]);
+		for (int level = 1; level < pyrLevels; level++) {
+
+			if (((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
+				cv::gpu::pyrDown(deviceGrayImage[level - 1], deviceGrayImage[level]);
+			else {
+				deviceGrayImage[level - 1].download(grayImage[level - 1]);
+				cv::pyrDown(grayImage[level - 1], grayImage[level]);
+				deviceGrayImage[level].upload(grayImage[level]);
+			}
+			GPUPyrDownAnnotation(deviceScribbleImage[level - 1].ptr(), deviceScribbleImage[level - 1].step,
+				deviceEditedImage[level - 1].ptr(), deviceEditedImage[level - 1].step, deviceEditedImage[level - 1].rows,
+				deviceEditedImage[level - 1].cols, deviceScribbleImage[level].ptr(), deviceScribbleImage[level].step,
+				deviceEditedImage[level].ptr(), deviceEditedImage[level].step, deviceEditedImage[level].rows,
+				deviceEditedImage[level].cols);
+		}
+
+		GPUConvertToFloat(deviceEditedImage[pyrLevels - 1].ptr(), deviceEditedImage[pyrLevels - 1].step,
+			deviceDepthImage[pyrLevels - 1].ptr<float>(), deviceDepthImage[pyrLevels - 1].step, deviceScribbleImage[pyrLevels - 1].ptr(),
+			deviceScribbleImage[pyrLevels - 1].step, deviceEditedImage[pyrLevels - 1].rows, deviceEditedImage[pyrLevels - 1].cols);
+
+		for (int level = pyrLevels - 1; level >= 0; level--) {
+
+			int CUDAIteration = maxIterations / powf(2.0, (pyrLevels - 1) - level);
+			float CUDAThreshold = 1e-5;
+
+			GPUMatrixFreeSolver(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
+				deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, depthImage[level].rows,
+				depthImage[level].cols, beta, CUDAIteration, CUDAThreshold, solverName, method, level, isDebugEnabled);
+
+			if (level > 0) {
+
+				if (deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols) {
+					cv::gpu::pyrUp(deviceDepthImage[level], deviceDepthImage[level - 1]);
+				}
+				else {
+					deviceDepthImage[level].download(floatDepthImage[level]);
+					cv::pyrUp(floatDepthImage[level], floatDepthImage[level - 1], deviceDepthImage[level - 1].size());
+					deviceDepthImage[level - 1].upload(floatDepthImage[level - 1]);
+				}
+
+				GPUConvertToFloat(deviceEditedImage[level - 1].ptr(), deviceEditedImage[level - 1].step,
+					deviceDepthImage[level - 1].ptr<float>(), deviceDepthImage[level - 1].step, deviceScribbleImage[level - 1].ptr(),
+					deviceScribbleImage[level - 1].step, deviceEditedImage[level - 1].rows, deviceEditedImage[level - 1].cols);
+
+			}
+
+		}
+
+		if (refocus) {
+			//std::cout << "Defocusing image..." << std::endl;
+			GPUSimulateDefocus(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step,
+				deviceArtisticImage.ptr(), deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
+			deviceArtisticImage.download(depthEffect->getArtisticImage());
+			artisticRendering = true;
+		}
+		if (desaturation) {
+			//std::cout << "Desaturating image..." << std::endl;
+			GPUSimulateDesaturation(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceGrayImage[0].ptr(),
+				deviceGrayImage[0].step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step, deviceArtisticImage.ptr(),
+				deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
+			deviceArtisticImage.download(depthEffect->getArtisticImage());
+			artisticRendering = true;
+		}
+		if (haze) {
+			//std::cout << "Hazing image..." << std::endl;
+			GPUSimulateHaze(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step,
+				deviceArtisticImage.ptr(), deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
+			deviceArtisticImage.download(depthEffect->getArtisticImage());
+			artisticRendering = true;
+		}
+
+		deviceDepthImage[0].convertTo(deviceUCDepthImage, CV_8UC1);
+		deviceUCDepthImage.download(depthImage[0]);
+
+		//std::cout << t << std::endl;
+	}
+}
+*/
 int main(int argc, const char *argv[])
 {
 
@@ -191,7 +284,6 @@ int main(int argc, const char *argv[])
 	std::string method = "Liao";
 	bool live = false;
 	bool datasetYuan = false;
-	bool artisticRendering = false;
 	for (int argument = 1; argument < argc; argument++) {
 		if (!strcmp(argv[argument], "-i"))
 			inputFileName.assign(argv[argument + 1]);
@@ -199,6 +291,12 @@ int main(int argc, const char *argv[])
 			annotatedFileName.assign(argv[argument + 1]);
 		else if (!strcmp(argv[argument], "--live"))
 			live = true;
+		else if (!strcmp(argv[argument], "--haze"))
+			haze = true;
+		else if (!strcmp(argv[argument], "--desaturation"))
+			desaturation = true;
+		else if (!strcmp(argv[argument], "--refocus"))
+			refocus = true;
 		else if (!strcmp(argv[argument], "--datasetYuan"))
 			datasetYuan = true;
 		else if (!strcmp(argv[argument], "-h"))
@@ -309,44 +407,47 @@ int main(int argc, const char *argv[])
 	deviceScribbleImage[0].upload(scribbleImage[0]);
 	deviceEditedImage[0].upload(editedImage[0]);
 #endif
-
+	
     cv::namedWindow("Original Image");
     cv::namedWindow("Edited Image");
     cv::namedWindow("Depth Image");
 	cv::setMouseCallback("Edited Image", mouseEvent, NULL);
-	cv::createTrackbar("Solver", "Edited Image", &solverCode, 13, trackbarEvent);
+	//cv::createTrackbar("Solver", "Edited Image", &solverCode, 13, trackbarEvent);
 	
+	//std::thread t1(teste, deviceGrayImage, deviceDepthImage, deviceEditedImage, grayImage, depthImage, floatDepthImage, deviceUCDepthImage, 
+	//	deviceOriginalImage, deviceArtisticImage, &depthEffect, pyrLevels, maxIterations, beta, method, isDebugEnabled);
+	//t1.detach();
+
     while(key != 27) {
 
         cv::imshow("Original Image", originalImage);
         cv::imshow("Edited Image", editedImage[0]);
-        cv::imshow("Depth Image", depthImage[0]);
+		cv::imshow("Depth Image", depthImage[0]);
 		if(artisticRendering) cv::imshow("Artistic Image", depthEffect.getArtisticImage());
 
         key = cv::waitKey(33);
         updateScribbleColor(key);
-        
 		//Check menu
 
 		if (solverName.find("GPU") != std::string::npos) {
 #ifdef OPENCV_WITH_CUDA
-			if (key == 'b' || key == 'B') {
-				std::cout << "Defocusing image..." << std::endl;
+			if (key == 'b' || key == 'B' || refocus) {
+				//std::cout << "Defocusing image..." << std::endl;
 				GPUSimulateDefocus(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step,
 					deviceArtisticImage.ptr(), deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
 				deviceArtisticImage.download(depthEffect.getArtisticImage());
 				artisticRendering = true;
 			}
-			if (key == 'g' || key == 'G') {
-				std::cout << "Desaturating image..." << std::endl;
+			if (key == 'g' || key == 'G' || desaturation) {
+				//std::cout << "Desaturating image..." << std::endl;
 				GPUSimulateDesaturation(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceGrayImage[0].ptr(),
 					deviceGrayImage[0].step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step, deviceArtisticImage.ptr(),
 					deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
 				deviceArtisticImage.download(depthEffect.getArtisticImage());
 				artisticRendering = true;
 			}
-			if (key == 'h' || key == 'H') {
-				std::cout << "Hazing image..." << std::endl;
+			if (key == 'h' || key == 'H' || haze) {
+				//std::cout << "Hazing image..." << std::endl;
 				GPUSimulateHaze(deviceOriginalImage.ptr(), deviceOriginalImage.step, deviceDepthImage[0].ptr<float>(), deviceDepthImage[0].step,
 					deviceArtisticImage.ptr(), deviceArtisticImage.step, deviceOriginalImage.rows, deviceOriginalImage.cols);
 				deviceArtisticImage.download(depthEffect.getArtisticImage());
@@ -383,11 +484,12 @@ int main(int argc, const char *argv[])
 			if (solverName.find("GPU") != std::string::npos) {
 
 #ifdef OPENCV_WITH_CUDA
+				
 				deviceScribbleImage[0].upload(scribbleImage[0]);
 				deviceEditedImage[0].upload(editedImage[0]);
 				for (int level = 1; level < pyrLevels; level++) {
 
-					if(((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
+					if (((deviceGrayImage[level - 1].rows + 1 / 2) == deviceGrayImage[level].rows) && ((deviceGrayImage[level - 1].cols + 1 / 2) == deviceGrayImage[level].cols))
 						cv::gpu::pyrDown(deviceGrayImage[level - 1], deviceGrayImage[level]);
 					else {
 						deviceGrayImage[level - 1].download(grayImage[level - 1]);
@@ -399,12 +501,12 @@ int main(int argc, const char *argv[])
 						deviceEditedImage[level - 1].cols, deviceScribbleImage[level].ptr(), deviceScribbleImage[level].step,
 						deviceEditedImage[level].ptr(), deviceEditedImage[level].step, deviceEditedImage[level].rows,
 						deviceEditedImage[level].cols);
-				}
+			}
 
 				GPUConvertToFloat(deviceEditedImage[pyrLevels - 1].ptr(), deviceEditedImage[pyrLevels - 1].step,
-					deviceDepthImage[pyrLevels - 1].ptr<float>(), deviceDepthImage[pyrLevels - 1].step, deviceScribbleImage[pyrLevels - 1].ptr(), 
+					deviceDepthImage[pyrLevels - 1].ptr<float>(), deviceDepthImage[pyrLevels - 1].step, deviceScribbleImage[pyrLevels - 1].ptr(),
 					deviceScribbleImage[pyrLevels - 1].step, deviceEditedImage[pyrLevels - 1].rows, deviceEditedImage[pyrLevels - 1].cols);
-				
+
 				for (int level = pyrLevels - 1; level >= 0; level--) {
 
 					int CUDAIteration = maxIterations / powf(2.0, (pyrLevels - 1) - level);
@@ -413,17 +515,18 @@ int main(int argc, const char *argv[])
 					GPUMatrixFreeSolver(deviceDepthImage[level].ptr<float>(), deviceDepthImage[level].step, deviceScribbleImage[level].ptr(),
 						deviceScribbleImage[level].step, deviceGrayImage[level].ptr(), deviceGrayImage[level].step, depthImage[level].rows,
 						depthImage[level].cols, beta, CUDAIteration, CUDAThreshold, solverName, method, level, isDebugEnabled);
-				
+
 					if (level > 0) {
-						
+
 						if (deviceDepthImage[level].rows * 2 == deviceDepthImage[level - 1].rows && deviceDepthImage[level].cols * 2 == deviceDepthImage[level - 1].cols) {
 							cv::gpu::pyrUp(deviceDepthImage[level], deviceDepthImage[level - 1]);
-						} else {
+						}
+						else {
 							deviceDepthImage[level].download(floatDepthImage[level]);
 							cv::pyrUp(floatDepthImage[level], floatDepthImage[level - 1], deviceDepthImage[level - 1].size());
 							deviceDepthImage[level - 1].upload(floatDepthImage[level - 1]);
 						}
-						
+
 						GPUConvertToFloat(deviceEditedImage[level - 1].ptr(), deviceEditedImage[level - 1].step,
 							deviceDepthImage[level - 1].ptr<float>(), deviceDepthImage[level - 1].step, deviceScribbleImage[level - 1].ptr(),
 							deviceScribbleImage[level - 1].step, deviceEditedImage[level - 1].rows, deviceEditedImage[level - 1].cols);
@@ -434,7 +537,6 @@ int main(int argc, const char *argv[])
 
 				deviceDepthImage[0].convertTo(deviceUCDepthImage, CV_8UC1);
 				deviceUCDepthImage.download(depthImage[0]);
-
 #else
 				std::cout << "GPU module not supported (OpenCV's GPU support is required)" << std::endl;
 #endif
