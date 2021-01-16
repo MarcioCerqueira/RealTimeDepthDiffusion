@@ -1,4 +1,4 @@
-#include "cuda/GPUImageProcessing.h"
+#include "GPUImageProcessing.h"
 #include <cuda_runtime.h>
 
 int divUp3(int a, int b) { 

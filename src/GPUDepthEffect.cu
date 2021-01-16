@@ -1,4 +1,4 @@
-#include "cuda/GPUDepthEffect.h"
+#include "GPUDepthEffect.h"
 #include <cuda_runtime.h>
 
 int divUp2(int a, int b) { 
